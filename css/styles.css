@@ -1061,3 +1061,364 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ═══════════════════════════════════════════════
+   GUIDED TRAINING PLANS
+   ═══════════════════════════════════════════════ */
+
+/* ── Plan Cards (horizontal scroll) ── */
+.plans-scroll {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 0 8px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.plans-scroll::-webkit-scrollbar { display: none; }
+
+.plan-card {
+  min-width: 200px;
+  max-width: 220px;
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  position: relative;
+  overflow: hidden;
+}
+.plan-card:hover {
+  border-color: var(--accent-blue);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.plan-card-emoji {
+  font-size: 1.6rem;
+  margin-bottom: 8px;
+}
+.plan-card-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+.plan-card-meta {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plan-card-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 8px;
+}
+.badge-iniciante { background: rgba(102,187,106,.15); color: var(--zone-2); }
+.badge-iniciante\\+ { background: rgba(255,167,38,.15); color: var(--zone-3); }
+
+/* ── Plan Detail ── */
+.plan-detail-header {
+  text-align: center;
+  padding: 20px 0;
+}
+.plan-detail-emoji { font-size: 3rem; margin-bottom: 8px; }
+.plan-detail-name { font-size: 1.5rem; font-weight: 700; }
+.plan-detail-desc {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.plan-detail-stats {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 12px;
+}
+.plan-detail-stat {
+  text-align: center;
+}
+.plan-detail-stat-value {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+.plan-detail-stat-label {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Phase Timeline */
+.phase-timeline {
+  margin: 16px 0;
+}
+.phase-item {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  position: relative;
+}
+.phase-track {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 28px;
+  flex-shrink: 0;
+}
+.phase-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  border: 2px solid;
+  flex-shrink: 0;
+  z-index: 1;
+}
+.phase-line {
+  width: 2px;
+  flex: 1;
+  background: var(--border-color);
+}
+.phase-item:last-child .phase-line { display: none; }
+
+.phase-content {
+  flex: 1;
+  padding-bottom: 16px;
+  min-width: 0;
+}
+.phase-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.phase-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.phase-duration {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.phase-targets {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.phase-tip {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+  margin-top: 4px;
+}
+
+/* ── Guided Workout ── */
+.guided-header {
+  padding: 12px 20px 0;
+  text-align: center;
+}
+.guided-plan-name {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.guided-phase-info {
+  margin-top: 4px;
+}
+.guided-phase-label {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.guided-phase-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-top: 2px;
+}
+.guided-phase-timer {
+  font-size: 1.8rem;
+  font-weight: 300;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+.guided-progress {
+  width: 100%;
+  padding: 6px 20px;
+}
+.guided-progress-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.guided-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-gradient);
+  transition: width 1s linear;
+}
+
+/* Target Indicators */
+.target-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  margin-top: 4px;
+}
+.target-label {
+  color: var(--text-tertiary);
+}
+.target-badge {
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.target-badge.on_target {
+  background: rgba(63,185,80,.15);
+  color: var(--success);
+}
+.target-badge.close_below, .target-badge.close_above {
+  background: rgba(210,153,34,.15);
+  color: var(--warning);
+}
+.target-badge.below {
+  background: rgba(79,195,247,.12);
+  color: var(--zone-1);
+}
+.target-badge.above {
+  background: rgba(239,83,80,.12);
+  color: var(--error);
+}
+.target-badge.no_data {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+
+/* Next Phase Preview */
+.next-phase-card {
+  width: 100%;
+  max-width: 320px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.next-phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+.next-phase-info {
+  flex: 1;
+  min-width: 0;
+}
+.next-phase-label {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.next-phase-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-top: 1px;
+}
+.next-phase-meta {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+/* Overall Progress */
+.overall-progress {
+  padding: 0 20px 4px;
+}
+.overall-bar {
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+}
+.overall-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-blue);
+  transition: width 1s linear;
+}
+
+/* Phase Transition Flash */
+@keyframes phase-flash {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.phase-transition {
+  animation: phase-flash 0.5s ease-in-out 3;
+}
+
+/* Plan Creator */
+.creator-phase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.creator-phase-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  position: relative;
+}
+.creator-phase-num {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.creator-phase-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: rgba(248,81,73,.1);
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.form-row-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}

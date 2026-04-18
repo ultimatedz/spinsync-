@@ -108,10 +108,20 @@
         <button class="sensor-btn connect" id="btn-connect-csc">Conectar</button>
       </div>
 
-      <!-- Start Button -->
-      <div class="mt-24">
+      <!-- Guided Training Plans -->
+      <div class="card-title" style="padding: 0 4px; margin-top: 16px; margin-bottom: 10px;">TREINOS GUIADOS</div>
+      <div class="plans-scroll" id="plans-scroll">
+        <!-- Rendered by JS -->
+      </div>
+      <div class="mt-8">
+        <button class="btn btn-secondary btn-full btn-sm" id="btn-create-plan">➕ Criar Treino Personalizado</button>
+      </div>
+
+      <!-- Free Workout Button -->
+      <div class="card-title" style="padding: 0 4px; margin-top: 20px; margin-bottom: 10px;">TREINO LIVRE</div>
+      <div>
         <button class="btn btn-primary btn-full btn-lg" id="btn-start-workout" disabled>
-          ▶ INICIAR TREINO
+          ▶ INICIAR TREINO LIVRE
         </button>
       </div>
     </div>
@@ -269,6 +279,190 @@
 
       <div class="history-list" id="history-list">
         <!-- Rendered by JS -->
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: PLAN DETAIL                        -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-plan-detail" class="view">
+      <div class="plan-detail-header">
+        <div class="plan-detail-emoji" id="plan-emoji"></div>
+        <div class="plan-detail-name" id="plan-name"></div>
+        <div class="plan-detail-desc" id="plan-desc"></div>
+        <div class="plan-detail-stats">
+          <div class="plan-detail-stat">
+            <div class="plan-detail-stat-value" id="plan-duration">--</div>
+            <div class="plan-detail-stat-label">Duração</div>
+          </div>
+          <div class="plan-detail-stat">
+            <div class="plan-detail-stat-value" id="plan-phases-count">--</div>
+            <div class="plan-detail-stat-label">Fases</div>
+          </div>
+          <div class="plan-detail-stat">
+            <div class="plan-detail-stat-value" id="plan-difficulty">--</div>
+            <div class="plan-detail-stat-label">Nível</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-title" style="padding: 0 4px;">FASES DO TREINO</div>
+      <div class="phase-timeline" id="plan-timeline">
+        <!-- Rendered by JS -->
+      </div>
+
+      <button class="btn btn-primary btn-full btn-lg" id="btn-start-guided" disabled>
+        ▶ INICIAR ESTE TREINO
+      </button>
+      <div class="mt-8">
+        <button class="btn btn-secondary btn-full btn-sm" data-back="home">← Voltar</button>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: GUIDED WORKOUT                     -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-guided" class="view workout-view">
+      <!-- Phase Header -->
+      <div class="guided-header">
+        <div class="guided-plan-name" id="guided-plan-name"></div>
+        <div class="guided-phase-info">
+          <div class="guided-phase-label" id="guided-phase-label">FASE 1 DE 3</div>
+          <div class="guided-phase-name" id="guided-phase-name">Aquecimento</div>
+        </div>
+        <div class="guided-phase-timer" id="guided-phase-timer">05:00</div>
+      </div>
+
+      <!-- Phase Progress -->
+      <div class="guided-progress">
+        <div class="guided-progress-bar">
+          <div class="guided-progress-fill" id="guided-progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Main Content -->
+      <div class="workout-main">
+        <!-- BPM Circle -->
+        <div class="bpm-circle" id="guided-bpm-circle">
+          <div class="bpm-icon">❤️</div>
+          <div class="bpm-value" id="guided-bpm">--</div>
+          <div class="bpm-label">BPM</div>
+        </div>
+
+        <!-- BPM Target -->
+        <div class="target-row" id="guided-bpm-target">
+          <span class="target-label">Alvo: <span id="guided-bpm-range">--</span></span>
+          <span class="target-badge no_data" id="guided-bpm-badge">--</span>
+        </div>
+
+        <!-- Metrics -->
+        <div class="metrics-row">
+          <div class="metric-card">
+            <div class="metric-value rpm" id="guided-rpm">--</div>
+            <div class="metric-label">Cadência (RPM)</div>
+            <div class="target-row">
+              <span class="target-label">Alvo: <span id="guided-rpm-range">--</span></span>
+              <span class="target-badge no_data" id="guided-rpm-badge">--</span>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-value cal" id="guided-calories">0</div>
+            <div class="metric-label">Calorias (kcal)</div>
+          </div>
+        </div>
+
+        <!-- Phase Tip -->
+        <div class="next-phase-card" id="guided-tip-card" style="display:none;">
+          <div class="next-phase-dot" id="guided-tip-dot"></div>
+          <div class="next-phase-info">
+            <div class="next-phase-label">DICA</div>
+            <div class="next-phase-name" id="guided-tip-text"></div>
+          </div>
+        </div>
+
+        <!-- Next Phase -->
+        <div class="next-phase-card" id="guided-next-card" style="display:none;">
+          <div class="next-phase-dot" id="guided-next-dot"></div>
+          <div class="next-phase-info">
+            <div class="next-phase-label">PRÓXIMA FASE</div>
+            <div class="next-phase-name" id="guided-next-name"></div>
+            <div class="next-phase-meta" id="guided-next-meta"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overall Progress -->
+      <div class="overall-progress">
+        <div class="overall-bar">
+          <div class="overall-fill" id="guided-overall-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="workout-controls">
+        <button class="btn btn-pause" id="btn-guided-pause">⏸ Pausar</button>
+        <button class="btn btn-stop" id="btn-guided-stop">⏹ Finalizar</button>
+      </div>
+
+      <!-- Stop Modal -->
+      <div class="modal-overlay" id="guided-stop-modal">
+        <div class="modal">
+          <h2>Finalizar Treino?</h2>
+          <p>Tem certeza que deseja finalizar o treino guiado?</p>
+          <div class="modal-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-guided-cancel-stop">Cancelar</button>
+            <button class="btn btn-danger btn-sm" id="btn-guided-confirm-stop">Finalizar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: PLAN CREATOR                       -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-plan-creator" class="view">
+      <div class="view-header">
+        <h1>Criar Treino</h1>
+        <div class="subtitle">Monte seu treino personalizado</div>
+      </div>
+
+      <div class="card">
+        <div class="form-group">
+          <label for="creator-name">Nome do Treino</label>
+          <input type="text" id="creator-name" class="form-input" placeholder="Ex: Meu Intervalado">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="creator-emoji">Emoji</label>
+            <input type="text" id="creator-emoji" class="form-input" placeholder="🔥" maxlength="2" value="🔥">
+          </div>
+          <div class="form-group">
+            <label for="creator-difficulty">Nível</label>
+            <select id="creator-difficulty" class="form-select">
+              <option value="Iniciante">Iniciante</option>
+              <option value="Intermediário">Intermediário</option>
+              <option value="Avançado">Avançado</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="creator-desc">Descrição</label>
+          <input type="text" id="creator-desc" class="form-input" placeholder="Breve descrição do treino">
+        </div>
+      </div>
+
+      <div class="card-title" style="padding: 0 4px;">FASES</div>
+      <div class="creator-phase-list" id="creator-phases">
+        <!-- Rendered by JS -->
+      </div>
+
+      <button class="btn btn-secondary btn-full btn-sm" id="btn-add-phase">➕ Adicionar Fase</button>
+
+      <div class="mt-16">
+        <button class="btn btn-primary btn-full btn-lg" id="btn-save-plan">💾 Salvar Treino</button>
+      </div>
+      <div class="mt-8">
+        <button class="btn btn-secondary btn-full btn-sm" data-back="home">← Voltar</button>
       </div>
     </div>
 
