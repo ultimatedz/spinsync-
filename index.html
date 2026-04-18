@@ -466,6 +466,59 @@
       </div>
     </div>
 
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: ANALYTICS / RESULTS                -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-analytics" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Resultados</h1>
+          <div class="subtitle">Estatísticas dos seus treinos</div>
+        </div>
+      </div>
+
+      <!-- Filter Toggle -->
+      <div class="filter-toggle">
+        <button class="filter-btn active" data-period="week">Semana</button>
+        <button class="filter-btn" data-period="month">Mês</button>
+        <button class="filter-btn" data-period="year">Ano</button>
+        <button class="filter-btn" data-period="all">Tudo</button>
+      </div>
+
+      <!-- Main Aggregates -->
+      <div class="stats-grid mt-16">
+        <div class="stat-card">
+          <div class="stat-value cal" id="analytics-calories">0</div>
+          <div class="stat-label">Total kcal</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--text-primary)" id="analytics-duration">0h 0m</div>
+          <div class="stat-label">Tempo Total</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value hr" id="analytics-avg-bpm">0</div>
+          <div class="stat-label">BPM Médio</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value cadence" id="analytics-avg-rpm">0</div>
+          <div class="stat-label">RPM Médio</div>
+        </div>
+      </div>
+
+      <div class="card mt-16">
+        <div class="card-title">Treinos no Período</div>
+        <div style="font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 8px;" id="analytics-count">0</div>
+      </div>
+
+      <div class="chart-card mt-16">
+        <div class="card-title">Gasto Calórico</div>
+        <div class="chart-container">
+          <canvas id="chart-analytics-calories"></canvas>
+        </div>
+      </div>
+
+    </div>
+
   </div><!-- /app -->
 
   <!-- Bottom Navigation -->
@@ -475,8 +528,12 @@
       <span>Início</span>
     </button>
     <button class="nav-item" id="nav-history">
-      <span class="nav-icon">📊</span>
+      <span class="nav-icon">📋</span>
       <span>Histórico</span>
+    </button>
+    <button class="nav-item" id="nav-analytics">
+      <span class="nav-icon">📈</span>
+      <span>Resultados</span>
     </button>
     <button class="nav-item" id="nav-profile">
       <span class="nav-icon">👤</span>

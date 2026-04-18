@@ -2,8 +2,9 @@ import { BLEManager, BLESimulator } from './ble-manager.js';
 import { WorkoutRecorder } from './workout-recorder.js';
 import { WorkoutCharts } from './charts.js';
 import { ZoneCalculator, ZONES } from './zone-calculator.js';
-import * as Storage from './storage.js';
+import* as Storage from './storage.js';
 import * as Plans from './training-plans.js';
+import * as Analytics from './analytics.js';
 
 class SpinSyncApp {
   constructor() {
@@ -57,6 +58,16 @@ class SpinSyncApp {
     document.getElementById('nav-home')?.addEventListener('click', () => this.showView('home'));
     document.getElementById('nav-history')?.addEventListener('click', () => this.showView('history'));
     document.getElementById('nav-profile')?.addEventListener('click', () => this.showView('profile'));
+    document.getElementById('nav-analytics')?.addEventListener('click', () => this.showView('analytics'));
+
+    // Analytics Filters
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        this.renderAnalytics(e.target.dataset.period);
+      });
+    });
 
     // Sensor connections
     document.getElementById('btn-connect-hr')?.addEventListener('click', () => this.connectHR());
@@ -128,6 +139,9 @@ class SpinSyncApp {
         break;
       case 'history':
         this.renderHistory();
+        break;
+      case 'analytics':
+        this.renderAnalytics();
         break;
     }
 
@@ -585,6 +599,54 @@ class SpinSyncApp {
         }
       }, 100);
     });
+  }
+
+  renderAnalytics(period = 'week') {
+    const stats = Analytics.getStats(period);
+
+    // Update simple fields
+    document.getElementById('analytics-count').textContent = stats.count;
+    document.getElementById('analytics-calories').textContent = stats.totalCalories.toLocaleString();
+    
+    const h = Math.floor(stats.totalDuration / 3600);
+    const m = Math.floor((stats.totalDuration % 3600) / 60);
+    document.getElementById('analytics-duration').textContent = `${h}h ${m}m`;
+    
+    document.getElementById('analytics-avg-bpm').textContent = stats.avgBPM || '--';
+    document.getElementById('analytics-avg-rpm').textContent = stats.avgRPM || '--';
+
+    // Render chart
+    const canvas = document.getElementById('chart-analytics-calories');
+    if (this.analyticsChart) {
+      this.analyticsChart.destroy();
+    }
+    
+    if (stats.chartData.labels.length > 0) {
+      // Just a simple bar chart
+      this.analyticsChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+          labels: stats.chartData.labels,
+          datasets: [{
+            label: 'Calorias (kcal)',
+            data: stats.chartData.calories,
+            backgroundColor: '#EF5350',
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            x: { grid: { display: false } },
+            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } }
+          }
+        }
+      });
+    }
   }
 
   saveWorkout() {

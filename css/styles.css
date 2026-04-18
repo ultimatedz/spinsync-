@@ -1422,3 +1422,39 @@ body {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
 }
+
+/* ── Analytics View ── */
+.filter-toggle {
+  display: flex;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  margin: 16px 0;
+  border: 1px solid var(--border-color);
+}
+.filter-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 8px 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.filter-btn.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Fix for Bottom Nav when 4 items are present */
+.bottom-nav {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+.nav-item {
+  width: 100%;
+}
