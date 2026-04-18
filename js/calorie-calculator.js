@@ -32,7 +32,7 @@ export class CalorieCalculator {
       ) / 4.184;
     }
 
-    return Math.max(0, Math.round(calories));
+    return Math.max(0, calories);
   }
 
   /**
