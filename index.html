@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0D1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="SpinSync — Treino de spinning indoor com BPM e cadência em tempo real">
+  <title>SpinSync</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: PROFILE SETUP                      -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-profile" class="view">
+      <div class="brand">
+        <div class="brand-icon">🚴</div>
+        <h1>SpinSync</h1>
+        <p>Configure seu perfil para começar</p>
+      </div>
+
+      <form id="profile-form">
+        <div class="card">
+          <div class="card-title">Dados Pessoais</div>
+
+          <div class="form-group">
+            <label for="input-name">Nome</label>
+            <input type="text" id="input-name" class="form-input" placeholder="Seu nome" value="Caio" required>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-age">Idade</label>
+              <input type="number" id="input-age" class="form-input" placeholder="28" value="28" min="10" max="100" required>
+            </div>
+            <div class="form-group">
+              <label for="input-weight">Peso (kg)</label>
+              <input type="number" id="input-weight" class="form-input" placeholder="103" value="103" min="30" max="300" step="0.1" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-sex">Sexo</label>
+              <select id="input-sex" class="form-select">
+                <option value="M" selected>Masculino</option>
+                <option value="F">Feminino</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="input-rhr">FC Repouso</label>
+              <input type="number" id="input-rhr" class="form-input" placeholder="70" value="70" min="30" max="120">
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-full btn-lg">
+          💾 Salvar Perfil
+        </button>
+      </form>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: HOME / PRE-WORKOUT                 -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-home" class="view">
+      <div class="brand" style="padding-bottom: 12px;">
+        <div class="brand-icon">🚴</div>
+        <h1>SpinSync</h1>
+        <p id="home-greeting">Bom dia, Caio!</p>
+      </div>
+
+      <!-- Demo Toggle -->
+      <div id="demo-toggle" class="demo-toggle">
+        <span>🧪</span>
+        <span class="demo-label">Modo Demo</span>
+      </div>
+
+      <!-- Sensor Cards -->
+      <div class="card-title" style="padding: 0 4px; margin-bottom: 10px;">SENSORES</div>
+
+      <div class="sensor-card" id="sensor-hr">
+        <div class="sensor-icon hr">❤️</div>
+        <div class="sensor-info">
+          <div class="sensor-name" id="hr-device-name">Monitor Cardíaco</div>
+          <div class="sensor-status">
+            <span class="status-dot disconnected" id="hr-status-dot"></span>
+            <span id="hr-status-text">Desconectado</span>
+          </div>
+        </div>
+        <button class="sensor-btn connect" id="btn-connect-hr">Conectar</button>
+      </div>
+
+      <div class="sensor-card" id="sensor-csc">
+        <div class="sensor-icon csc">⚙️</div>
+        <div class="sensor-info">
+          <div class="sensor-name" id="csc-device-name">Sensor de Cadência</div>
+          <div class="sensor-status">
+            <span class="status-dot disconnected" id="csc-status-dot"></span>
+            <span id="csc-status-text">Desconectado</span>
+          </div>
+        </div>
+        <button class="sensor-btn connect" id="btn-connect-csc">Conectar</button>
+      </div>
+
+      <!-- Start Button -->
+      <div class="mt-24">
+        <button class="btn btn-primary btn-full btn-lg" id="btn-start-workout" disabled>
+          ▶ INICIAR TREINO
+        </button>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: WORKOUT DASHBOARD                  -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-workout" class="view workout-view">
+      <!-- Timer -->
+      <div class="workout-timer" id="workout-timer">00:00:00</div>
+
+      <!-- Main Content -->
+      <div class="workout-main">
+        <!-- BPM Circle -->
+        <div class="bpm-circle" id="bpm-circle">
+          <div class="bpm-icon">❤️</div>
+          <div class="bpm-value" id="workout-bpm">--</div>
+          <div class="bpm-label">BPM</div>
+        </div>
+
+        <!-- Zone Bar -->
+        <div class="zone-bar-wrapper">
+          <div class="zone-bar">
+            <div class="zone-bar-fill" id="zone-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div class="zone-label">
+            <span class="zone-name" id="zone-name">Sem dados</span>
+            <span class="zone-pct" id="zone-pct">0% FC máx</span>
+          </div>
+        </div>
+
+        <!-- Metrics -->
+        <div class="metrics-row">
+          <div class="metric-card">
+            <div class="metric-value rpm" id="workout-rpm">--</div>
+            <div class="metric-label">Cadência (RPM)</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-value cal" id="workout-calories">0</div>
+            <div class="metric-label">Calorias (kcal)</div>
+          </div>
+        </div>
+
+        <!-- Realtime Mini Chart -->
+        <div class="realtime-chart-wrapper">
+          <canvas id="realtime-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="workout-controls">
+        <button class="btn btn-pause" id="btn-pause">⏸ Pausar</button>
+        <button class="btn btn-stop" id="btn-stop">⏹ Finalizar</button>
+      </div>
+
+      <!-- Stop Confirmation Modal -->
+      <div class="modal-overlay" id="stop-modal">
+        <div class="modal">
+          <h2>Finalizar Treino?</h2>
+          <p>Tem certeza que deseja finalizar o treino atual? Os dados serão salvos no resumo.</p>
+          <div class="modal-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-cancel-stop">Cancelar</button>
+            <button class="btn btn-danger btn-sm" id="btn-confirm-stop">Finalizar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: WORKOUT SUMMARY                    -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-summary" class="view">
+      <div class="summary-header">
+        <h1>Resumo do Treino</h1>
+        <div class="summary-date" id="summary-date-text">--</div>
+      </div>
+
+      <!-- Hero Stats -->
+      <div class="summary-hero">
+        <div class="summary-hero-item">
+          <div class="summary-hero-value" id="summary-duration">--:--</div>
+          <div class="summary-hero-label">Duração</div>
+        </div>
+        <div class="summary-hero-item">
+          <div class="summary-hero-value" style="color: var(--zone-3);" id="summary-calories">--</div>
+          <div class="summary-hero-label">Calorias</div>
+        </div>
+        <div class="summary-hero-item">
+          <div class="summary-hero-value" style="color: var(--zone-4);" id="summary-avg-bpm">--</div>
+          <div class="summary-hero-label">FC Média</div>
+        </div>
+      </div>
+
+      <!-- BPM Chart -->
+      <div class="chart-card">
+        <div class="card-title">❤️ Frequência Cardíaca</div>
+        <div class="chart-container">
+          <canvas id="chart-bpm"></canvas>
+        </div>
+      </div>
+
+      <!-- Cadence Chart -->
+      <div class="chart-card">
+        <div class="card-title">⚙️ Cadência</div>
+        <div class="chart-container">
+          <canvas id="chart-cadence"></canvas>
+        </div>
+      </div>
+
+      <!-- Zone Time Chart -->
+      <div class="chart-card">
+        <div class="card-title">🎯 Tempo por Zona</div>
+        <div class="chart-container">
+          <canvas id="chart-zones"></canvas>
+        </div>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value hr" id="stat-avg-bpm">--</div>
+          <div class="stat-label">FC Média</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value hr" id="stat-max-bpm">--</div>
+          <div class="stat-label">FC Máxima</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value cadence" id="stat-avg-rpm">--</div>
+          <div class="stat-label">Cadência Média</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value cadence" id="stat-max-rpm">--</div>
+          <div class="stat-label">Cadência Máxima</div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="summary-actions">
+        <button class="btn btn-primary btn-full" id="btn-save-workout">💾 Salvar</button>
+        <button class="btn btn-secondary btn-full" id="btn-new-workout">🔄 Novo Treino</button>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: HISTORY                            -->
+    <!-- ════════════════════════════════════════ -->
+    <div id="view-history" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Histórico</h1>
+          <div class="subtitle">Seus treinos anteriores</div>
+        </div>
+      </div>
+
+      <div class="history-list" id="history-list">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+
+  </div><!-- /app -->
+
+  <!-- Bottom Navigation -->
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="nav-item active" id="nav-home">
+      <span class="nav-icon">🏠</span>
+      <span>Início</span>
+    </button>
+    <button class="nav-item" id="nav-history">
+      <span class="nav-icon">📊</span>
+      <span>Histórico</span>
+    </button>
+    <button class="nav-item" id="nav-profile">
+      <span class="nav-icon">👤</span>
+      <span>Perfil</span>
+    </button>
+  </nav>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
+  <!-- App -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
