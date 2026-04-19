@@ -5,7 +5,7 @@ import * as Storage from './storage.js';
  * @param {string} period - 'week', 'month', 'year', 'all'
  */
 export function getStats(period = 'month') {
-  const allWorkouts = Storage.getHistory();
+  const allWorkouts = Storage.getWorkouts();
   const now = new Date();
   
   // Define the start date based on period
