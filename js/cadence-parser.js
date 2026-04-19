@@ -6,22 +6,9 @@ export class CadenceParser {
   constructor() {
     this.lastCrankRevs = null;
     this.lastCrankTime = null;
+    this.lastReceiveTime = 0;
   }
 
-  /**
-   * Parseia um valor do CSC Measurement.
-   *
-   * Byte layout:
-   *  - Byte 0: Flags
-   *    - Bit 0: Wheel Revolution Data Present
-   *    - Bit 1: Crank Revolution Data Present
-   *  - Se Bit 1 (Crank):
-   *    - Cumulative Crank Revolutions (uint16)
-   *    - Last Crank Event Time (uint16, unidade: 1/1024 segundo)
-   *
-   * @param {DataView} dataView
-   * @returns {{ rpm: number } | null}
-   */
   parse(dataView) {
     const flags = dataView.getUint8(0);
     const hasCrank = (flags >> 1) & 0x01;
@@ -29,42 +16,50 @@ export class CadenceParser {
 
     if (!hasCrank) return null;
 
-    // Offset depends on whether wheel data is present
     let offset = 1;
     if (hasWheel) {
-      // Skip wheel data: 4 bytes (cumulative revs uint32) + 2 bytes (last event time uint16)
       offset += 6;
     }
 
     const crankRevs = dataView.getUint16(offset, true);
     const crankTime = dataView.getUint16(offset + 2, true);
+    const now = Date.now();
 
     if (this.lastCrankRevs === null) {
       this.lastCrankRevs = crankRevs;
       this.lastCrankTime = crankTime;
+      this.lastReceiveTime = now;
       return { rpm: 0 };
     }
 
-    // Handle uint16 overflow
     let deltaRevs = crankRevs - this.lastCrankRevs;
     if (deltaRevs < 0) deltaRevs += 65536;
 
     let deltaTime = crankTime - this.lastCrankTime;
     if (deltaTime < 0) deltaTime += 65536;
 
-    this.lastCrankRevs = crankRevs;
-    this.lastCrankTime = crankTime;
-
+    // Se o evento do pedivela não mudou (mesmas revoluções/tempo)
     if (deltaTime === 0 || deltaRevs === 0) {
-      return { rpm: 0 };
+      // Se passou muito tempo (ex: 2.5s) sem um novo crank interval,
+      // assumimos que a pessoa realmente parou de pedalar (RPM = 0).
+      if (now - this.lastReceiveTime > 2500) {
+        return { rpm: 0 };
+      }
+      // Senão, é só o sensor transmitindo em alta frequência
+      // antes da volta completar. Retornamos null para a UI ignorar
+      // este pacote e manter o valor atual no painel.
+      return null;
     }
 
-    // deltaTime is in 1/1024 seconds
+    this.lastCrankRevs = crankRevs;
+    this.lastCrankTime = crankTime;
+    this.lastReceiveTime = now;
+
     const deltaSeconds = deltaTime / 1024;
     const rpm = Math.round((deltaRevs / deltaSeconds) * 60);
 
-    // Sanity check: ignore unrealistic values
-    if (rpm > 200) return { rpm: 0 };
+    // Ignora valores absurdos (overflow lixo temporário)
+    if (rpm > 200 || rpm < 0) return null;
 
     return { rpm };
   }
@@ -72,5 +67,6 @@ export class CadenceParser {
   reset() {
     this.lastCrankRevs = null;
     this.lastCrankTime = null;
+    this.lastReceiveTime = 0;
   }
 }
