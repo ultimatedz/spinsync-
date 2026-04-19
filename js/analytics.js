@@ -36,14 +36,14 @@ export function getStats(period = 'month') {
   let countRPM = 0;
 
   filtered.forEach(w => {
-    totalDuration += (w.duration || 0);
-    totalCalories += (w.totalCalories || 0);
-    if (w.avgBpm) {
-      sumBPM += w.avgBpm;
+    totalDuration += (w.durationSeconds || 0);
+    totalCalories += (w.calories || 0);
+    if (w.avgBPM) {
+      sumBPM += w.avgBPM;
       countBPM++;
     }
-    if (w.avgRpm) {
-      sumRPM += w.avgRpm;
+    if (w.avgRPM) {
+      sumRPM += w.avgRPM;
       countRPM++;
     }
   });
@@ -83,8 +83,8 @@ function prepareChartData(workouts, period, startDate, endDate) {
     if (!groups[key]) {
       groups[key] = { calories: 0, duration: 0, dateObj: d };
     }
-    groups[key].calories += (w.totalCalories || 0);
-    groups[key].duration += (w.duration || 0) / 60; // in minutes
+    groups[key].calories += (w.calories || 0);
+    groups[key].duration += (w.durationSeconds || 0) / 60; // in minutes
   });
 
   // Sort chronologically
