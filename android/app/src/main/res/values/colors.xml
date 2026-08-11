@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Mirrors the bg-primary and accent-blue custom properties in css/styles.css. The app used
+    to inherit colorPrimary/colorPrimaryDark from the Capacitor library (indigo), which had
+    nothing to do with the palette the WebView actually renders.
+-->
+<resources>
+    <color name="spinsyncBackground">#0D1117</color>
+    <color name="spinsyncAccent">#2979FF</color>
+</resources>

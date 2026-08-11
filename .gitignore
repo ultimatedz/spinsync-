@@ -1,4 +1,20 @@
 node_modules/
+www/
 .DS_Store
 Thumbs.db
 *.log
+
+# Android build
+android/app/build/
+android/wear/build/
+android/build/
+android/.gradle/
+android/local.properties
+
+# Android Studio project state — machine-specific, not project config
+android/.idea/
+
+# Copied into the APK by `npx cap sync`; the sources live in js/, css/ and assets/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json

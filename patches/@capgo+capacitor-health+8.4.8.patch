@@ -1,0 +1,61 @@
+diff --git a/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthDataType.kt b/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthDataType.kt
+index 7cb8940..7c1e745 100644
+--- a/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthDataType.kt
++++ b/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthDataType.kt
+@@ -20,6 +20,7 @@ import androidx.health.connect.client.records.Record
+ import androidx.health.connect.client.records.RespiratoryRateRecord
+ import androidx.health.connect.client.records.RestingHeartRateRecord
+ import androidx.health.connect.client.records.SleepSessionRecord
++import androidx.health.connect.client.records.ExerciseSessionRecord
+ import androidx.health.connect.client.records.StepsRecord
+ import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
+ import androidx.health.connect.client.records.WeightRecord
+@@ -51,7 +52,8 @@ enum class HealthDataType(
+     BASAL_BODY_TEMPERATURE("basalBodyTemperature", BasalBodyTemperatureRecord::class, "celsius"),
+     BASAL_CALORIES("basalCalories", BasalMetabolicRateRecord::class, "kilocalorie"),
+     TOTAL_CALORIES("totalCalories", TotalCaloriesBurnedRecord::class, "kilocalorie"),
+-    MINDFULNESS("mindfulness", MindfulnessSessionRecord::class, "minute");
++    MINDFULNESS("mindfulness", MindfulnessSessionRecord::class, "minute"),
++    WORKOUTS("workouts", ExerciseSessionRecord::class, "minute");
+ 
+     val readPermission: String
+         get() = HealthPermission.getReadPermission(recordClass)
+diff --git a/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthManager.kt b/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthManager.kt
+index 047a5a8..fc7f49a 100644
+--- a/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthManager.kt
++++ b/node_modules/@capgo/capacitor-health/android/src/main/java/app/capgo/plugin/health/HealthManager.kt
+@@ -336,6 +336,9 @@ class HealthManager {
+                 )
+                 samples.add(record.startTime to payload)
+             }
++            HealthDataType.WORKOUTS -> {
++                throw IllegalArgumentException("Use queryWorkouts instead for reading workouts.")
++            }
+         }
+ 
+         val sorted = samples.sortedBy { it.first }
+@@ -600,6 +603,24 @@ class HealthManager {
+                 )
+                 client.insertRecords(listOf(record))
+             }
++            HealthDataType.WORKOUTS -> {
++                val workoutTypeStr = metadata?.get("workoutType") ?: "other"
++                val exerciseType = WorkoutType.fromString(workoutTypeStr) ?: ExerciseSessionRecord.EXERCISE_TYPE_OTHER_WORKOUT
++                
++                // Add title to metadata
++                val title = metadata?.get("title")
++                
++                val record = ExerciseSessionRecord(
++                    startTime = startTime,
++                    startZoneOffset = zoneOffset(startTime),
++                    endTime = endTime,
++                    endZoneOffset = zoneOffset(endTime),
++                    exerciseType = exerciseType,
++                    title = title,
++                    metadata = recordMetadata
++                )
++                client.insertRecords(listOf(record))
++            }
+         }
+     }
+ 

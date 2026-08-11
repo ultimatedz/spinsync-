@@ -1,0 +1,8 @@
+{
+  "appId": "com.spinsync.app",
+  "appName": "SpinSync",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
