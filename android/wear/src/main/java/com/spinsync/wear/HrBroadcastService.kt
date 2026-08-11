@@ -19,6 +19,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import androidx.wear.ongoing.OngoingActivity
+import androidx.wear.ongoing.Status
 import kotlinx.coroutines.launch
 
 /**
@@ -446,14 +448,32 @@ class HrBroadcastService : LifecycleService() {
         } else {
             getString(R.string.notif_text_idle)
         }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
             .setSilent(true)
+
+        // Ongoing Activity puts this on the watch face itself.
+        //
+        // Ambient mode alone is not enough: measured on a Galaxy Watch 4 the system stops
+        // a third-party activity's window on doze and shows the watch face instead, so
+        // without this the BPM is simply gone the moment the screen dims.
+        val status = Status.Builder()
+            .addTemplate(if (bpm > 0) "#bpm# bpm" else getString(R.string.notif_text_idle))
+            .addPart("bpm", Status.TextPart(bpm.toString()))
             .build()
+
+        OngoingActivity.Builder(this, NOTIF_ID, builder)
+            .setStaticIcon(android.R.drawable.ic_menu_compass)
+            .setTouchIntent(open)
+            .setStatus(status)
+            .build()
+            .apply(this)
+
+        return builder.build()
     }
 
     /** Throttled: refreshing an ongoing notification every second is pure battery waste. */

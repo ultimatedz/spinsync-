@@ -10,11 +10,15 @@ import android.view.View
 import kotlin.math.min
 
 /**
- * Ring around the BPM readout showing the current heart-rate zone.
+ * Zone gauge drawn around the rim of the display.
  *
  * The zone already travels in the workout packet from the phone and was going unused. A
  * colour on the wrist answers "am I working hard enough" without reading a number, which
  * is the whole point of glancing at a watch mid-effort.
+ *
+ * At the rim rather than around the BPM readout: a ring sized to surround the number is
+ * roughly 96dp tall, and on a 450px round watch that is enough to push the Parar button
+ * off the bottom. The rim is free real estate.
  */
 class ZoneRingView @JvmOverloads constructor(
     context: Context,
@@ -33,10 +37,12 @@ class ZoneRingView @JvmOverloads constructor(
             Color.parseColor("#AB47BC"), // Z5 VO2
         )
 
-        const val STROKE_DP = 5f
+        const val STROKE_DP = 6f
         /** Leaves a gap at the bottom so the ring reads as a gauge, not a plain circle. */
         const val SWEEP_DEGREES = 300f
         const val START_DEGREES = 120f
+        /** Keeps the stroke clear of the bezel curvature. */
+        const val EDGE_INSET_DP = 3f
     }
 
     private val density = context.resources.displayMetrics.density
@@ -75,7 +81,7 @@ class ZoneRingView @JvmOverloads constructor(
         }
 
     override fun onDraw(canvas: Canvas) {
-        val inset = zonePaint.strokeWidth / 2 + 1f
+        val inset = zonePaint.strokeWidth / 2 + EDGE_INSET_DP * density
         val size = min(width, height).toFloat()
         val left = (width - size) / 2 + inset
         val top = (height - size) / 2 + inset

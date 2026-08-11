@@ -9,6 +9,14 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
+    <!-- Deliberately outside the ScrollView and outside boxedEdges: the ring hugs the
+         display edge, where it costs no vertical space at all. Sized around the number it
+         pushed the Parar button off the bottom of a 450px screen. -->
+    <com.spinsync.wear.ZoneRingView
+        android:id="@+id/zone_ring"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -24,29 +32,15 @@
             android:paddingTop="4dp"
             android:paddingBottom="2dp">
 
-            <!-- The ring sits behind the number rather than around the whole screen: on a
-                 round display an edge ring competes with the system's own indicators. -->
-            <FrameLayout
+            <TextView
+                android:id="@+id/txt_bpm"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content">
-
-                <com.spinsync.wear.ZoneRingView
-                    android:id="@+id/zone_ring"
-                    android:layout_width="96dp"
-                    android:layout_height="96dp"
-                    android:layout_gravity="center" />
-
-                <TextView
-                    android:id="@+id/txt_bpm"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center"
-                    android:text="@string/bpm_placeholder"
-                    android:textColor="#EF5350"
-                    android:textSize="36sp"
-                    android:textStyle="bold"
-                    android:includeFontPadding="false" />
-            </FrameLayout>
+                android:layout_height="wrap_content"
+                android:text="@string/bpm_placeholder"
+                android:textColor="#EF5350"
+                android:textSize="36sp"
+                android:textStyle="bold"
+                android:includeFontPadding="false" />
 
             <!-- Hidden once a workout is running: the extra rows push the Parar button off
                  the bottom of a 450px round screen, and a big red number over a kcal figure

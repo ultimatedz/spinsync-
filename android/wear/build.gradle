@@ -63,6 +63,12 @@ dependencies {
     implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.8.7"
     implementation "androidx.wear:wear:1.3.0"
 
+    // Ongoing Activity: puts live BPM on the watch face itself. Measured on a Galaxy
+    // Watch 4, ambient mode does not hand the display to a third-party activity — the
+    // window is stopped and the watch-face dream takes over — so this is the only way the
+    // number is actually readable once the screen dims.
+    implementation "androidx.wear:wear-ongoing:1.0.0"
+
     // Quick-start tile: one swipe from the watch face instead of digging through the
     // app launcher with gloves on.
     implementation "androidx.wear.tiles:tiles:1.4.1"

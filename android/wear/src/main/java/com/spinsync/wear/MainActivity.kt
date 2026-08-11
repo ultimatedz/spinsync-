@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
 
         lifecycle.addObserver(
             AmbientLifecycleObserver(this, object : AmbientLifecycleObserver.AmbientLifecycleCallback {
-                override fun onEnterAmbient(details: AmbientLifecycleObserver.AmbientDetails) {
+                override fun onEnterAmbient(ambientDetails: AmbientLifecycleObserver.AmbientDetails) {
                     applyAmbient(true)
                 }
 
@@ -104,27 +104,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        // Only while the user is actually looking at the watch — the service is what keeps
-        // sampling alive once the screen goes off.
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-    }
+    // ── Screen policy ────────────────────────────────────────────────────────
 
-    override fun onStop() {
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        super.onStop()
+    /**
+     * Holds the screen only while a session is running.
+     *
+     * It used to be held whenever the activity was visible, which burned brightness on an
+     * idle screen. Dropping it entirely was worse: measured on a Galaxy Watch 4, ambient
+     * mode does not grant the display to a third-party activity — the window is stopped
+     * and the watch face's ambient dream takes over — so without the flag the app simply
+     * disappears 15 seconds into a ride.
+     *
+     * The ambient callbacks below stay wired for watches that do grant it; the Ongoing
+     * Activity on the foreground notification is what carries the BPM to the watch face
+     * everywhere else.
+     */
+    private fun applyScreenPolicy(running: Boolean) {
+        if (running) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     // ── Ambient mode ─────────────────────────────────────────────────────────
 
-    /**
-     * Keeps the screen on, dimmed, instead of blanking mid-ride.
-     *
-     * FLAG_KEEP_SCREEN_ON only holds while the activity is interactive; the watch still
-     * went dark and a raised wrist showed an ordinary watch face. For an app whose whole
-     * job is being glanced at during a 45-minute effort, that was the wrong default.
-     */
+    /** Dims the UI in place on watches that let an app own the ambient screen. */
     private fun applyAmbient(ambient: Boolean) {
         isAmbient = ambient
 
@@ -172,6 +177,7 @@ class MainActivity : ComponentActivity() {
         }
 
         binding.btnToggle.setText(if (state.isRunning) R.string.btn_stop else R.string.btn_start)
+        applyScreenPolicy(state.isRunning)
 
         renderWorkout(state.workout)
     }
