@@ -24,6 +24,8 @@
     <string name="detail_no_activity_permission">Falta permissão de atividade física</string>
     <string name="detail_session_busy">Outro app assumiu a sessão</string>
 
+    <string name="tile_idle">Toque para transmitir</string>
+
     <string name="bpm_placeholder">--</string>
     <string name="unit_bpm">bpm</string>
     <string name="dot_separator">·</string>

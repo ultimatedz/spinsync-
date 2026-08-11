@@ -22,6 +22,11 @@ object HapticPatterns {
     private const val FINAL_STRETCH = 5
     private const val WORKOUT_END = 6
 
+    // Exposed so the watch can raise the same cues on its own, for the zone-drift nudge
+    // the phone knows nothing about.
+    const val PATTERN_PHASE_UP = PHASE_UP
+    const val PATTERN_PHASE_DOWN = PHASE_DOWN
+
     /** Timings alternate off/on, starting with an initial 0ms delay. */
     private val WAVEFORMS: Map<Int, LongArray> = mapOf(
         PHASE_WARNING to longArrayOf(0, 130),

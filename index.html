@@ -66,6 +66,52 @@
     </div>
 
     <!-- ════════════════════════════════════════ -->
+    <!-- VIEW: ONBOARDING                         -->
+    <!-- ════════════════════════════════════════ -->
+    <!-- First run used to drop straight into the profile form, with no hint that the app
+         is useless without a heart-rate sensor. -->
+    <div id="view-welcome" class="view">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">🚴</div>
+        <h1>SpinSync</h1>
+        <p>Seu treino de spinning, medido de verdade</p>
+      </div>
+
+      <div class="card">
+        <div class="onboard-item">
+          <div class="onboard-icon" aria-hidden="true">❤️</div>
+          <div>
+            <div class="onboard-title">Frequência cardíaca ao vivo</div>
+            <div class="onboard-text">Conecte uma cinta Bluetooth ou use o app SpinSync HR no seu relógio Wear OS.</div>
+          </div>
+        </div>
+        <div class="onboard-item">
+          <div class="onboard-icon" aria-hidden="true">🎯</div>
+          <div>
+            <div class="onboard-title">Treinos guiados</div>
+            <div class="onboard-text">O app diz quando acelerar e quando aliviar, e vibra no punho na troca de fase.</div>
+          </div>
+        </div>
+        <div class="onboard-item">
+          <div class="onboard-icon" aria-hidden="true">📈</div>
+          <div>
+            <div class="onboard-title">Progressão automática</div>
+            <div class="onboard-text">Conforme você segura as zonas prescritas, o app libera treinos mais difíceis.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt-16">
+        <p class="text-secondary" style="font-size:0.8rem;">
+          Sem sensor dá para usar o <strong>Modo Demo</strong>, que gera dados fictícios só
+          para você conhecer o app. Seus treinos ficam apenas neste aparelho.
+        </p>
+      </div>
+
+      <button class="btn btn-primary btn-full btn-lg mt-16" id="btn-welcome-start">Começar</button>
+    </div>
+
+    <!-- ════════════════════════════════════════ -->
     <!-- VIEW: PROFILE SETUP                      -->
     <!-- ════════════════════════════════════════ -->
     <div id="view-profile" class="view">
@@ -107,11 +153,38 @@
               </select>
             </div>
             <div class="form-group">
+              <!-- Destrava Mifflin-St Jeor no cálculo de calorias; sem ela o app usa uma
+                   taxa basal média que erra bastante nos extremos de peso. -->
+              <label for="input-height">Altura (cm)</label>
+              <input type="number" id="input-height" class="form-input" placeholder="175"
+                     inputmode="numeric" min="100" max="250">
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-16">
+          <div class="card-title">Frequência Cardíaca</div>
+          <p class="text-secondary" style="font-size:0.8rem;margin-bottom:12px;">
+            Suas zonas saem daqui. Se souber sua FC máxima real, informe — a estimativa por
+            idade erra até 12 bpm, o que desloca as zonas inteiras.
+          </p>
+
+          <div class="form-row">
+            <div class="form-group">
               <label for="input-rhr">FC Repouso</label>
               <input type="number" id="input-rhr" class="form-input" placeholder="60"
                      inputmode="numeric" min="30" max="120">
             </div>
+            <div class="form-group">
+              <label for="input-maxhr">FC Máxima</label>
+              <input type="number" id="input-maxhr" class="form-input" placeholder="estimar"
+                     inputmode="numeric" min="120" max="230">
+            </div>
           </div>
+
+          <!-- Preenchido por updateZonePreview(): números abstratos viram limites
+               conferíveis contra o que o rider vê na bike. -->
+          <div class="zone-preview" id="zone-preview" hidden></div>
         </div>
 
         <button type="submit" class="btn btn-primary btn-full btn-lg">
@@ -131,6 +204,27 @@
             <span class="toggle-slider"></span>
             <span class="sr-only">Vibração nos treinos guiados</span>
           </label>
+        </div>
+
+        <div class="setting-row mt-16">
+          <div class="setting-info">
+            <div class="setting-name">Pausa automática</div>
+            <div class="setting-desc">Para o cronômetro quando você para de pedalar. Precisa do sensor de cadência.</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="setting-autopause" checked>
+            <span class="toggle-slider"></span>
+            <span class="sr-only">Pausa automática</span>
+          </label>
+        </div>
+
+        <div class="setting-row mt-16">
+          <div class="setting-info">
+            <label class="setting-name" for="setting-goal">Meta semanal</label>
+            <div class="setting-desc">Treinos por semana. 0 desliga.</div>
+          </div>
+          <input type="number" id="setting-goal" class="form-input setting-number"
+                 inputmode="numeric" min="0" max="14" value="3">
         </div>
       </div>
 
@@ -158,6 +252,11 @@
           <button type="button" class="btn btn-secondary btn-full btn-sm" id="btn-import-data">Importar backup</button>
           <input type="file" id="input-import-file" accept="application/json,.json" hidden>
         </div>
+        <!-- Só aparece no app Android: o navegador não escreve em disco sem um gesto. -->
+        <div class="mt-8" id="auto-backup-row" hidden>
+          <button type="button" class="btn btn-secondary btn-full btn-sm" id="btn-backup-now">Fazer backup agora</button>
+          <p class="text-secondary" style="font-size:0.75rem;margin-top:6px;" id="auto-backup-status"></p>
+        </div>
         <div class="mt-8">
           <button type="button" class="btn btn-danger btn-full btn-sm" id="btn-reset-data">Apagar todos os dados</button>
         </div>
@@ -174,6 +273,19 @@
         <!-- Neutral until updateHomeView() has a profile to greet: it early-returns when
              there is none, and a name baked into the markup would greet the wrong person. -->
         <p id="home-greeting">Bem-vindo!</p>
+      </div>
+
+      <!-- Weekly goal. Weeks, not days: the plans themselves prescribe rest days, so a
+           daily streak would punish following them. -->
+      <div class="goal-card" id="goal-card" hidden>
+        <div class="goal-info">
+          <div class="goal-title" id="goal-title"></div>
+          <div class="goal-bar"><div class="goal-bar-fill" id="goal-bar-fill"></div></div>
+        </div>
+        <div class="goal-streak" id="goal-streak" hidden>
+          <div class="goal-streak-value" id="goal-streak-value">0</div>
+          <div class="goal-streak-label">semanas</div>
+        </div>
       </div>
 
       <!-- Coach: where you are on the ladder and what comes next -->
@@ -289,8 +401,12 @@
         </div>
       </div>
 
-      <!-- Controls -->
+      <!-- Last lap, shown only after one is marked. -->
+      <div class="lap-banner" id="lap-banner" hidden></div>
+
+      <!-- Controls. A lap slices a free ride into efforts without needing a plan. -->
       <div class="workout-controls">
+        <button class="btn btn-lap" id="btn-lap">🏁 Volta</button>
         <button class="btn btn-pause" id="btn-pause">⏸ Pausar</button>
         <button class="btn btn-stop" id="btn-stop">⏹ Finalizar</button>
       </div>
@@ -403,10 +519,27 @@
         </div>
       </div>
 
+      <div class="card" id="laps-card" hidden>
+        <div class="card-title">Voltas</div>
+        <div id="laps-list"></div>
+      </div>
+
+      <!-- Perceived effort. The one thing no sensor measures, and the cheapest to collect:
+           a single tap while the summary is already on screen. -->
+      <div class="card" id="rpe-card">
+        <div class="card-title">Como foi?</div>
+        <div class="rpe-scale" id="rpe-scale" role="radiogroup" aria-label="Esforço percebido de 1 a 10"></div>
+        <div class="rpe-hint" id="rpe-hint">Toque para avaliar o esforço</div>
+        <label class="sr-only" for="workout-note">Nota sobre o treino</label>
+        <textarea id="workout-note" class="form-input mt-8" rows="2"
+                  placeholder="Alguma observação? (opcional)"></textarea>
+      </div>
+
       <!-- Actions. Labels and behaviour depend on how the summary was opened —
            right after a ride (already saved) vs. reopened from history. -->
       <div class="summary-actions">
         <button class="btn btn-primary btn-full" id="btn-summary-primary">Concluir</button>
+        <button class="btn btn-secondary btn-full btn-sm" id="btn-export-tcx">Exportar TCX (Strava, Garmin)</button>
         <button class="btn btn-danger btn-full" id="btn-summary-delete">Descartar treino</button>
       </div>
     </div>
@@ -602,7 +735,12 @@
         </div>
       </div>
 
-      <div class="card-title" style="padding: 0 4px;">FASES</div>
+      <div class="creator-phases-head">
+        <span class="card-title" style="padding: 0;">FASES</span>
+        <!-- Running total: without it you only found out the plan was 12 minutes long
+             after saving it and opening the detail screen. -->
+        <span class="creator-total" id="creator-total">0 min</span>
+      </div>
       <div class="creator-phase-list" id="creator-phases">
         <!-- Rendered by JS -->
       </div>
@@ -658,7 +796,7 @@
 
       <div class="card mt-16">
         <div class="card-title">Treinos no Período</div>
-        <div style="font-size: 2rem; font-weight: 700; text-align: center; margin-bottom: 8px;" id="analytics-count">0</div>
+        <div class="analytics-count" id="analytics-count">0</div>
       </div>
 
       <div class="chart-card mt-16" id="analytics-chart-card">
@@ -666,6 +804,21 @@
         <div class="chart-container">
           <canvas id="chart-analytics-calories" role="img" aria-label="Calorias por treino no período selecionado"></canvas>
         </div>
+      </div>
+
+      <!-- Same plan, repeated. Constant prescribed load is what makes the heart-rate
+           line mean anything: falling = fitter, not = easier session. -->
+      <div class="chart-card mt-16" id="fitness-trend-card" hidden>
+        <div class="card-title">Evolução do Condicionamento</div>
+        <p class="text-secondary" style="font-size:0.78rem;margin-bottom:10px;" id="fitness-trend-desc"></p>
+        <div class="chart-container">
+          <canvas id="chart-fitness" role="img" aria-label="Frequência cardíaca média no mesmo treino ao longo do tempo"></canvas>
+        </div>
+      </div>
+
+      <div class="card mt-16" id="records-card" hidden>
+        <div class="card-title">Recordes</div>
+        <div id="records-list"></div>
       </div>
 
       <div class="empty-state" id="analytics-empty" hidden>
@@ -707,6 +860,7 @@
   <script src="js/vendor/capacitor-app.js"></script>
   <script src="js/vendor/bluetooth-le.js"></script>
   <script src="js/vendor/capacitor-health.js"></script>
+  <script src="js/vendor/capacitor-filesystem.js"></script>
   <script src="js/vendor/chart.umd.js"></script>
 
   <noscript>

@@ -9,6 +9,7 @@
 
 import * as Storage from './storage.js';
 import * as Plans from './training-plans.js';
+import { zoneCalcFromSummary } from './zone-calculator.js';
 
 /**
  * The ladder. Ordered by difficulty, then by how demanding the plan is inside its level.
@@ -48,9 +49,8 @@ export function isLadderPlan(planId) {
   return LADDER.includes(planId);
 }
 
-export function getMaxHR(profile) {
-  return profile?.age ? 220 - profile.age : 192;
-}
+// getMaxHR used to live here as a second copy of `220 - age` with its own fallback. It is
+// now in js/physiology.js, and evaluateSession goes through a ZoneCalculator instead.
 
 // ── Session evaluation ───────────────────────────────────────────────────────
 
@@ -66,7 +66,9 @@ export function evaluateSession(summary, profile) {
   const plan = Plans.getAllPlans().find(p => p.id === summary.planId);
   if (!plan || !Array.isArray(plan.phases) || plan.phases.length === 0) return null;
 
-  const maxHR = summary.maxHR || getMaxHR(profile);
+  // Built from the ride's own snapshot, so re-judging an old session after a profile
+  // edit gives the same verdict it did on the day.
+  const zoneCalc = zoneCalcFromSummary(summary, profile);
   const planDuration = Plans.getPlanDuration(plan);
 
   // Phase boundaries in seconds of elapsed workout time. Paused time is excluded from
@@ -95,7 +97,7 @@ export function evaluateSession(summary, profile) {
 
     if (dp.bpm > 0) {
       hrSamples++;
-      const target = Plans.resolvePhaseBPM(slot.phase, maxHR);
+      const target = Plans.resolvePhaseBPM(slot.phase, zoneCalc);
       const verdict = Plans.evaluateTarget(dp.bpm, target.min, target.max);
       if (verdict === 'on_target') hrOnTarget++;
       else if (verdict === 'close_below' || verdict === 'close_above') hrClose++;
@@ -121,7 +123,9 @@ export function evaluateSession(summary, profile) {
   const hrCoverage = totalSamples > 0 ? hrSamples / totalSamples : 0;
   const rpmCoverage = totalSamples > 0 ? rpmSamples / totalSamples : 0;
   const z5Share = totalSamples > 0 ? z5Seconds / totalSamples : 0;
-  const avgIntensity = summary.avgBPM > 0 ? summary.avgBPM / maxHR : null;
+  // Intensity in whichever model the zones use, so the OVERCOOK_INTENSITY threshold means
+  // the same thing as the zone boundaries it is compared against.
+  const avgIntensity = summary.avgBPM > 0 ? zoneCalc.intensityOf(summary.avgBPM) : null;
 
   const hasHR = hrCoverage >= SENSOR_MIN_COVERAGE && zoneAdherence !== null;
   const hasCadence = rpmCoverage >= SENSOR_MIN_COVERAGE && cadenceAdherence !== null;

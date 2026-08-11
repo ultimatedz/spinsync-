@@ -67,7 +67,10 @@ data class WorkoutStatus(
     /** Seconds until the next phase, or null when there is no next phase. */
     val secondsToNextPhase: Int? = null,
     val shift: PhaseShift = PhaseShift.NONE,
+    /** Zone the rider is actually in, 0-5. */
     val zone: Int = 0,
+    /** Zone the current phase asks for, 0-5. 0 on a free ride. */
+    val targetZone: Int = 0,
     val rpmMin: Int = 0,
     val rpmMax: Int = 0,
 )
@@ -82,7 +85,7 @@ data class WorkoutStatus(
  *   byte 3-4  calories, uint16 LE
  *   byte 5-6  seconds to next phase, uint16 LE (0xFFFF = none)
  *   byte 7    phase shift ordinal
- *   byte 8    current heart-rate zone, 0-5
+ *   byte 8    zones: low nibble = current, high nibble = target (both 0-5)
  *   byte 9-10 target cadence range
  */
 fun parseWorkoutPacket(value: ByteArray): WorkoutStatus? {
@@ -103,7 +106,10 @@ fun parseWorkoutPacket(value: ByteArray): WorkoutStatus? {
         calories = u16(3),
         secondsToNextPhase = if (nextPhase == 0xFFFF) null else nextPhase,
         shift = PhaseShift.entries.getOrElse(shiftOrdinal) { PhaseShift.NONE },
-        zone = u8(8),
+        // Both zones ride in one byte: each is 0-5, so a nibble each keeps the packet at
+        // 11 bytes instead of growing it for 3 bits of information.
+        zone = u8(8) and 0x0f,
+        targetZone = (u8(8) shr 4) and 0x0f,
         rpmMin = u8(9),
         rpmMax = u8(10),
     )

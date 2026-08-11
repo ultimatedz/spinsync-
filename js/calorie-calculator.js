@@ -1,15 +1,17 @@
 export class CalorieCalculator {
-  constructor(sex, weight, age) {
+  /**
+   * @param {string} sex    'M' | 'F'
+   * @param {number} weight kg
+   * @param {number} age    anos
+   * @param {number} [height] cm — opcional; sem ela cai na aproximação antiga.
+   */
+  constructor(sex, weight, age, height) {
     this.sex = sex;
     this.weight = weight;
     this.age = age;
+    this.height = height;
 
-    // Pre-calculate BMR (Mifflin-St Jeor) in kcal/min for resting subtraction
-    // Men:   BMR = 10 * weight + 6.25 * height - 5 * age + 5
-    // Women: BMR = 10 * weight + 6.25 * height - 5 * age - 161
-    // Since we don't have height, use Katch-McArdle approximation:
-    // ~1.0 kcal/min for men, ~0.9 kcal/min for women (average resting rate)
-    this.bmrPerMin = sex === 'M' ? 1.0 : 0.9;
+    this.bmrPerMin = computeBmrPerMin(sex, weight, age, height);
   }
 
   /**
@@ -62,4 +64,26 @@ export class CalorieCalculator {
     const durationMinutes = intervalSeconds / 60;
     return this.calculate(currentHR, durationMinutes);
   }
+}
+
+/**
+ * Basal metabolic rate in kcal/min, subtracted from the Keytel total so what is reported
+ * is *active* calories — the same convention Samsung Health, Apple Watch and Garmin use.
+ *
+ * With a height, this is Mifflin-St Jeor, the formula the code always wanted:
+ *   Homens:   BMR = 10·peso + 6.25·altura − 5·idade + 5
+ *   Mulheres: BMR = 10·peso + 6.25·altura − 5·idade − 161
+ *
+ * Without one it falls back to the old flat 1.0 / 0.9 kcal/min. That constant is a
+ * population average: for a 55 kg woman it overstates the resting burn by roughly a
+ * third, and for a 100 kg man it understates it by about as much — which lands straight
+ * in the active-calorie figure, since it is subtracted from it.
+ */
+function computeBmrPerMin(sex, weight, age, height) {
+  const usable = Number.isFinite(height) && height >= 100 && height <= 250
+    && Number.isFinite(weight) && Number.isFinite(age);
+  if (!usable) return sex === 'M' ? 1.0 : 0.9;
+
+  const bmrPerDay = 10 * weight + 6.25 * height - 5 * age + (sex === 'M' ? 5 : -161);
+  return bmrPerDay / (24 * 60);
 }

@@ -302,12 +302,22 @@ export function getPhaseZone(phase) {
 /**
  * Resolve BPM targets baseado no perfil do usuário.
  */
-export function resolvePhaseBPM(phase, maxHR) {
+/**
+ * Target heart-rate window for a phase.
+ *
+ * Takes a ZoneCalculator rather than a bare maxHR: the zones themselves may be
+ * heart-rate-reserve based, and computing the on-screen target as a plain %max would
+ * disagree with the zone the recorder reports for the very same beat.
+ *
+ * @param {object} phase
+ * @param {import('./zone-calculator.js').ZoneCalculator} zoneCalc
+ */
+export function resolvePhaseBPM(phase, zoneCalc) {
   const zone = ZONES.find(z => z.id === phase.zone);
-  if (!zone) return { min: 0, max: 0 };
+  if (!zone || !zoneCalc) return { min: 0, max: 0 };
   return {
-    min: Math.round(zone.minPct * maxHR),
-    max: Math.round(zone.maxPct * maxHR)
+    min: zoneCalc.bpmAt(zone.minPct),
+    max: zoneCalc.bpmAt(zone.maxPct)
   };
 }
 

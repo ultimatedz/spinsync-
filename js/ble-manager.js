@@ -23,7 +23,7 @@ const WORKOUT_CHARACTERISTIC = '6b1a0003-4c2f-4d9a-9b3e-1f7a5c8d2e60';
  *   byte 3-4  calories, uint16 LE
  *   byte 5-6  seconds to next phase, uint16 LE (0xFFFF = none)
  *   byte 7    phase shift: 0 none, 1 harder, 2 easier, 3 same
- *   byte 8    current heart-rate zone, 0-5
+ *   byte 8    zonas: nibble baixo = atual, nibble alto = alvo (ambas 0-5)
  *   byte 9-10 target cadence range
  *
  * 11 bytes, so it fits the 20-byte default ATT payload and never forces an MTU exchange.
@@ -38,7 +38,8 @@ export function buildWorkoutPacket(s = {}) {
   view.setUint16(3, u16(s.calories), true);
   view.setUint16(5, s.secondsToNextPhase == null ? 0xffff : u16(s.secondsToNextPhase), true);
   view.setUint8(7, s.shift || 0);
-  view.setUint8(8, Math.max(0, Math.min(5, s.zone || 0)));
+  const zone5 = (n) => Math.max(0, Math.min(5, n || 0));
+  view.setUint8(8, (zone5(s.targetZone) << 4) | zone5(s.zone));
   view.setUint8(9, Math.max(0, Math.min(255, s.rpmMin || 0)));
   view.setUint8(10, Math.max(0, Math.min(255, s.rpmMax || 0)));
   return view;

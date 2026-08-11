@@ -8,6 +8,13 @@ import * as Analytics from './analytics.js';
 import * as HealthSync from './health-sync.js';
 import * as Progression from './progression.js';
 import * as Haptics from './haptics.js';
+import { buildTCX, tcxFilename } from './tcx-export.js';
+import * as AutoBackup from './auto-backup.js';
+
+/** Sem cadência por este tempo com o sensor conectado = parou de pedalar. */
+const AUTO_PAUSE_AFTER_MS = 8000;
+/** Abaixo disto a roda está apenas girando por inércia, não é pedalada. */
+const AUTO_RESUME_RPM = 5;
 
 class SpinSyncApp {
   constructor() {
@@ -24,6 +31,11 @@ class SpinSyncApp {
     // Sensor contact, from flag bits 1-2 of the BLE HR measurement. Optimistic default:
     // straps that do not support the field report both bits as 0.
     this.hrContact = true;
+
+    // Auto-pause: distinto da pausa manual, para que um toque deliberado nunca seja desfeito
+    // pelo sensor e vice-versa.
+    this.autoPaused = false;
+    this.lastPedalAt = 0;
 
     this.currentView = null;
     this.viewingSummary = null;
@@ -54,7 +66,8 @@ class SpinSyncApp {
     // Check if profile exists
     const profile = Storage.getProfile();
     if (!profile) {
-      this.showView('profile');
+      // What the app needs to work comes before what it needs to know about you.
+      this.showView('welcome');
     } else {
       this.showView('home');
     }
@@ -71,6 +84,14 @@ class SpinSyncApp {
 
     // Initialize Health Connect, then reflect its real state in the profile screen.
     HealthSync.init().then(() => this.updateHealthCard());
+
+    // Backup on launch rather than on a timer: the app is opened around rides, which is
+    // exactly when there is something new worth keeping.
+    AutoBackup.init().then(async (ok) => {
+      if (!ok) return;
+      await AutoBackup.maybeBackup();
+      this.updateBackupCard();
+    });
 
     // Silently pick up sensors used before — no picker, no tap.
     if (!this.demoMode) {
@@ -106,6 +127,13 @@ class SpinSyncApp {
     document.getElementById('btn-connect-csc')?.addEventListener('click', () => this.connectCSC());
 
     // Demo toggle
+    // Live zone preview while the numbers that drive it are being edited.
+    ['#input-age', '#input-rhr', '#input-maxhr'].forEach(sel => {
+      document.querySelector(sel)?.addEventListener('input', () => this.updateZonePreview());
+    });
+
+    document.getElementById('btn-welcome-start')?.addEventListener('click', () => this.showView('profile'));
+
     document.getElementById('demo-toggle')?.addEventListener('click', () => this.toggleDemo());
 
     // Settings
@@ -114,10 +142,24 @@ class SpinSyncApp {
       Haptics.setEnabled(e.target.checked);
       if (e.target.checked) Haptics.cue('phaseWarning'); // confirm it actually buzzes
     });
+    // On blur rather than per keystroke: one storage write per edit, not per letter.
+    document.getElementById('workout-note')?.addEventListener('blur', () => this.persistSummaryEdits());
+
+    document.getElementById('setting-autopause')?.addEventListener('change', (e) => {
+      Storage.saveSettings({ autoPause: e.target.checked });
+    });
+    document.getElementById('setting-goal')?.addEventListener('change', (e) => {
+      const goal = Math.max(0, Math.min(14, parseInt(e.target.value, 10) || 0));
+      e.target.value = goal;
+      Storage.saveSettings({ weeklyGoal: goal });
+      this.updateHomeView();
+    });
     document.getElementById('btn-health-connect')?.addEventListener('click', () => this.connectHealth());
 
     // Backup
     document.getElementById('btn-export-data')?.addEventListener('click', () => this.exportData());
+    document.getElementById('btn-backup-now')?.addEventListener('click', () => this.backupNow());
+    document.getElementById('btn-export-tcx')?.addEventListener('click', () => this.exportTCX());
     document.getElementById('btn-reset-data')?.addEventListener('click', () => this.resetData());
     const importInput = document.getElementById('input-import-file');
     document.getElementById('btn-import-data')?.addEventListener('click', () => importInput?.click());
@@ -130,6 +172,7 @@ class SpinSyncApp {
     document.getElementById('btn-start-workout')?.addEventListener('click', () => this.startWorkout());
 
     // Workout controls
+    document.getElementById('btn-lap')?.addEventListener('click', () => this.markLap());
     document.getElementById('btn-pause')?.addEventListener('click', () => this.togglePause());
     document.getElementById('btn-stop')?.addEventListener('click', () => this.showStopConfirm());
 
@@ -270,14 +313,32 @@ class SpinSyncApp {
     });
   }
 
+  /**
+   * Zone calculator for the current profile.
+   *
+   * Replaces three separate copies of `220 - profile.age` that had drifted into the
+   * guided-workout screens, each with its own fallback. Cheap to build (a handful of
+   * arithmetic), so it is not cached — a stale one after a profile edit would be a much
+   * nastier bug than the allocation is a cost.
+   */
+  zoneCalcForProfile() {
+    return new ZoneCalculator(Storage.getProfile() || {});
+  }
+
   // ── Settings ──
 
   /** Pushes stored preferences into the modules that own them, and into the UI. */
   applySettings() {
     const settings = Storage.getSettings();
     Haptics.setEnabled(settings.haptics);
-    const hapticsInput = document.getElementById('setting-haptics');
-    if (hapticsInput) hapticsInput.checked = settings.haptics;
+
+    const set = (id, value, prop = 'checked') => {
+      const el = document.getElementById(id);
+      if (el) el[prop] = value;
+    };
+    set('setting-haptics', settings.haptics);
+    set('setting-autopause', settings.autoPause);
+    set('setting-goal', settings.weeklyGoal, 'value');
   }
 
   /**
@@ -458,7 +519,44 @@ class SpinSyncApp {
     f.querySelector('#input-age').value = profile.age || '';
     f.querySelector('#input-weight').value = profile.weight || '';
     f.querySelector('#input-sex').value = profile.sex || 'M';
+    f.querySelector('#input-height').value = profile.height || '';
     f.querySelector('#input-rhr').value = profile.restingHR || '';
+    f.querySelector('#input-maxhr').value = profile.maxHR || '';
+    this.updateZonePreview();
+  }
+
+  /**
+   * Shows the actual zone boundaries the profile produces.
+   *
+   * Max HR and resting HR are abstract numbers; "Z4 começa em 158 bpm" is the thing the
+   * rider can sanity-check against what they see on the bike.
+   */
+  updateZonePreview() {
+    const host = document.getElementById('zone-preview');
+    if (!host) return;
+
+    const f = document.getElementById('profile-form');
+    const draft = {
+      age: parseInt(f.querySelector('#input-age').value, 10),
+      restingHR: parseInt(f.querySelector('#input-rhr').value, 10),
+      maxHR: parseInt(f.querySelector('#input-maxhr').value, 10),
+    };
+    if (!Number.isFinite(draft.age)) { host.hidden = true; return; }
+
+    const calc = new ZoneCalculator(draft);
+    host.hidden = false;
+    host.innerHTML = `
+      <div class="zone-preview-head">
+        <span>FC máx ${calc.getMaxHR()} bpm</span>
+        <span>${calc.isReserveBased() ? 'reserva de FC' : '% da FC máx'}</span>
+      </div>
+      ${calc.getZoneBounds().map(z => `
+        <div class="zone-preview-row">
+          <span class="zone-preview-dot" style="background:${z.color}"></span>
+          <span class="zone-preview-name">Z${z.id} ${escapeHtml(z.name)}</span>
+          <span class="zone-preview-range">${z.minBPM}–${z.maxBPM}</span>
+        </div>`).join('')}
+    `;
   }
 
   saveProfile() {
@@ -467,7 +565,10 @@ class SpinSyncApp {
     const name = f.querySelector('#input-name').value.trim();
     const age = parseInt(f.querySelector('#input-age').value, 10);
     const weight = parseFloat(f.querySelector('#input-weight').value);
+    const height = parseInt(f.querySelector('#input-height').value, 10);
     const restingHR = parseInt(f.querySelector('#input-rhr').value, 10);
+    const maxHR = parseInt(f.querySelector('#input-maxhr').value, 10);
+    const filled = (sel) => f.querySelector(sel).value !== '';
 
     // Silently coercing a bad weight to 70 kg made every calorie number afterwards
     // wrong without the user ever knowing.
@@ -475,8 +576,17 @@ class SpinSyncApp {
       [!name, '#input-name', 'Informe seu nome.'],
       [!Number.isFinite(age) || age < 10 || age > 100, '#input-age', 'Idade deve estar entre 10 e 100 anos.'],
       [!Number.isFinite(weight) || weight < 30 || weight > 300, '#input-weight', 'Peso deve estar entre 30 e 300 kg.'],
-      [f.querySelector('#input-rhr').value !== '' && (!Number.isFinite(restingHR) || restingHR < 30 || restingHR > 120),
+      [filled('#input-height') && (!Number.isFinite(height) || height < 100 || height > 250),
+        '#input-height', 'Altura deve estar entre 100 e 250 cm.'],
+      [filled('#input-rhr') && (!Number.isFinite(restingHR) || restingHR < 30 || restingHR > 120),
         '#input-rhr', 'FC de repouso deve estar entre 30 e 120 bpm.'],
+      [filled('#input-maxhr') && (!Number.isFinite(maxHR) || maxHR < 120 || maxHR > 230),
+        '#input-maxhr', 'FC máxima deve estar entre 120 e 230 bpm.'],
+      // A max at or below resting would make the heart-rate reserve zero or negative and
+      // every zone boundary nonsense.
+      [filled('#input-maxhr') && filled('#input-rhr') && Number.isFinite(maxHR)
+        && Number.isFinite(restingHR) && maxHR <= restingHR + 40,
+        '#input-maxhr', 'FC máxima deve ser bem maior que a de repouso.'],
     ].find(([bad]) => bad);
 
     if (problems) {
@@ -494,7 +604,11 @@ class SpinSyncApp {
       age,
       weight,
       sex: f.querySelector('#input-sex').value || 'M',
+      height: Number.isFinite(height) ? height : null,
       restingHR: Number.isFinite(restingHR) ? restingHR : 60,
+      // null, not a prediction: getMaxHR() falls back to Tanaka, and storing the estimate
+      // would make it indistinguishable from a measured value on the next edit.
+      maxHR: Number.isFinite(maxHR) ? maxHR : null,
     });
 
     this.toast(saved ? 'Perfil salvo.' : 'Não foi possível salvar o perfil.', saved ? 'success' : 'error');
@@ -506,20 +620,58 @@ class SpinSyncApp {
   exportData() {
     try {
       const payload = Storage.exportAll();
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-
       const stamp = new Date().toISOString().slice(0, 10);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `spinsync-backup-${stamp}.json`;
-      link.click();
-
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      this.downloadFile(JSON.stringify(payload, null, 2), `spinsync-backup-${stamp}.json`, 'application/json');
       this.toast(`Backup com ${payload.workouts.length} treino(s) gerado.`, 'success');
     } catch (e) {
       console.error('[App] Export failed:', e);
       this.toast('Não foi possível gerar o backup.', 'error');
+    }
+  }
+
+  async updateBackupCard() {
+    const row = document.getElementById('auto-backup-row');
+    if (!row) return;
+    row.hidden = !AutoBackup.isAvailable();
+    if (row.hidden) return;
+
+    const status = document.getElementById('auto-backup-status');
+    if (!status) return;
+    const last = await AutoBackup.getLastBackupLabel();
+    status.textContent = last
+      ? `Último backup automático: ${last}. São guardadas as 5 cópias mais recentes.`
+      : 'Ainda sem backup automático.';
+  }
+
+  async backupNow() {
+    const result = await AutoBackup.maybeBackup(true);
+    this.toast(
+      result ? `Backup salvo (${result.workouts} treino(s)).` : 'Não foi possível salvar o backup.',
+      result ? 'success' : 'error'
+    );
+    this.updateBackupCard();
+  }
+
+  /** Shared download path for the JSON backup and the per-ride TCX. */
+  downloadFile(contents, filename, mime) {
+    const url = URL.createObjectURL(new Blob([contents], { type: mime }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  /** Exports the summary on screen in a format other training apps can read. */
+  exportTCX() {
+    const summary = this.viewingSummary;
+    if (!summary) return;
+    try {
+      this.downloadFile(buildTCX(summary), tcxFilename(summary), 'application/vnd.garmin.tcx+xml');
+      this.toast('Arquivo TCX gerado — abre no Strava e no Garmin Connect.', 'success');
+    } catch (e) {
+      console.error('[App] TCX export failed:', e);
+      this.toast('Não foi possível gerar o TCX.', 'error');
     }
   }
 
@@ -563,9 +715,46 @@ class SpinSyncApp {
       greeting.textContent = `${period}, ${profile.name}!`;
     }
 
+    this.renderGoalCard();
     this.renderCoachCard();
     this.updateSensorUI();
     this.updateStartButton();
+  }
+
+  /**
+   * Weekly goal progress, and the run of weeks that met it.
+   *
+   * The analytics screen answers "what did I do"; this answers "am I on track", which is
+   * the question that actually gets someone back on the bike on a Tuesday.
+   */
+  renderGoalCard() {
+    const card = document.getElementById('goal-card');
+    if (!card) return;
+
+    const { weeklyGoal } = Storage.getSettings();
+    if (!weeklyGoal) { card.hidden = true; return; }
+
+    const { done, streak, met } = Analytics.getGoalProgress(weeklyGoal);
+    card.hidden = false;
+
+    const title = document.getElementById('goal-title');
+    if (title) {
+      const remaining = weeklyGoal - done;
+      title.textContent = met
+        ? `Meta da semana batida — ${done} de ${weeklyGoal}`
+        : `${done} de ${weeklyGoal} esta semana · falta${remaining > 1 ? 'm' : ''} ${remaining}`;
+    }
+
+    const fill = document.getElementById('goal-bar-fill');
+    if (fill) fill.style.width = `${Math.min(100, (done / weeklyGoal) * 100)}%`;
+
+    // Only worth showing once it is a run rather than a single week.
+    const streakEl = document.getElementById('goal-streak');
+    if (streakEl) {
+      streakEl.hidden = streak < 2;
+      const value = document.getElementById('goal-streak-value');
+      if (value) value.textContent = streak;
+    }
   }
 
   // ── Coach / progression ──
@@ -739,9 +928,18 @@ class SpinSyncApp {
       this.updateStartButton();
     });
     ble.addEventListener('csc-data', (e) => {
+      const rpm = e.detail.rpm;
+
+      // Outside the paused guard on purpose: pedalling again is exactly the signal that
+      // ends an auto-pause, and inside the guard it would never be seen.
+      if (rpm >= AUTO_RESUME_RPM) {
+        this.lastPedalAt = Date.now();
+        if (this.autoPaused) this.resumeFromAutoPause();
+      }
+
       if (this.recorder && !this.recorder.isPaused) {
-        this.recorder.updateRPM(e.detail.rpm);
-        this.updateWorkoutRPM(e.detail.rpm);
+        this.recorder.updateRPM(rpm);
+        this.updateWorkoutRPM(rpm);
       }
     });
   }
@@ -876,6 +1074,12 @@ class SpinSyncApp {
 
     // Start recording
     this.recorder.start();
+    // Um treino novo não herda a pausa automática do anterior.
+    this.autoPaused = false;
+    this.lastPedalAt = Date.now();
+
+    const lapBanner = document.getElementById('lap-banner');
+    if (lapBanner) lapBanner.hidden = true;
 
     // Start tick loop
     this.tickInterval = setInterval(() => this.workoutTick(), 1000);
@@ -914,6 +1118,7 @@ class SpinSyncApp {
     // Update zone
     this.updateZoneBar();
 
+    this.checkAutoPause();
     this.mirrorToWatch();
 
     // Persist state every 5 seconds
@@ -952,6 +1157,8 @@ class SpinSyncApp {
       if (phase) {
         status.rpmMin = phase.rpmMin;
         status.rpmMax = phase.rpmMax;
+        // Lets the watch nag on its own when the effort drifts off the prescription.
+        status.targetZone = phase.zone;
         if (next) {
           status.secondsToNextPhase = Math.max(0, phase.duration - this.guidedPhaseElapsed);
           status.shift = next.zone > phase.zone ? PHASE_SHIFT.HARDER
@@ -1084,23 +1291,106 @@ class SpinSyncApp {
     ctx.fill();
   }
 
+  /**
+   * Pauses the clock when the pedals stop.
+   *
+   * Stopping for water used to keep the timer running, which dragged the heart-rate
+   * average down, inflated the duration and made the progression engine judge the
+   * session against time the rider never actually spent riding.
+   *
+   * Only ever engages with a cadence sensor connected: without one there is no way to
+   * tell a water break from a steady effort, and pausing on a hunch would be worse than
+   * not pausing at all.
+   */
+  checkAutoPause() {
+    if (!this.recorder || this.recorder.isPaused) return;
+    if (!Storage.getSettings().autoPause) return;
+    if (!this.getBLE()?.cscConnected) return;
+    if (!this.lastPedalAt) return;
+
+    if (Date.now() - this.lastPedalAt >= AUTO_PAUSE_AFTER_MS) {
+      this.autoPaused = true;
+      this.recorder.pause();
+      this.setPauseButton(true);
+      this.toast('Pausado automaticamente — você parou de pedalar', 'info');
+      Haptics.cue('phaseSame');
+    }
+  }
+
+  resumeFromAutoPause() {
+    if (!this.autoPaused || !this.recorder) return;
+    this.autoPaused = false;
+    this.recorder.resume();
+    this.setPauseButton(false);
+  }
+
+  markLap() {
+    const lap = this.recorder?.markLap();
+    if (!lap) {
+      this.toast('Volta muito curta', 'error');
+      return;
+    }
+
+    Haptics.cue('phaseSame');
+
+    const banner = document.getElementById('lap-banner');
+    if (banner) {
+      banner.hidden = false;
+      const mins = Math.floor(lap.durationSeconds / 60);
+      const secs = lap.durationSeconds % 60;
+      const parts = [`Volta ${lap.index} · ${mins}:${String(secs).padStart(2, '0')}`];
+      if (lap.avgBPM) parts.push(`${lap.avgBPM} bpm`);
+      if (lap.avgRPM) parts.push(`${lap.avgRPM} rpm`);
+      banner.textContent = parts.join(' · ');
+    }
+  }
+
+  /** Laps are only meaningful on the ride they belong to; the summary lists them. */
+  renderLaps(summary) {
+    const card = document.getElementById('laps-card');
+    const list = document.getElementById('laps-list');
+    if (!card || !list) return;
+
+    const laps = summary?.laps || [];
+    card.hidden = laps.length === 0;
+    if (laps.length === 0) return;
+
+    list.innerHTML = laps.map(lap => {
+      const mins = Math.floor(lap.durationSeconds / 60);
+      const secs = lap.durationSeconds % 60;
+      const meta = [
+        lap.avgBPM ? `${lap.avgBPM} bpm` : null,
+        lap.avgRPM ? `${lap.avgRPM} rpm` : null,
+        lap.calories ? `${lap.calories} kcal` : null,
+      ].filter(Boolean).join(' · ');
+      return `
+        <div class="lap-row">
+          <span class="lap-index">${lap.index}</span>
+          <span class="lap-time">${mins}:${String(secs).padStart(2, '0')}</span>
+          <span class="lap-meta">${escapeHtml(meta)}</span>
+        </div>`;
+    }).join('');
+  }
+
+  setPauseButton(paused) {
+    const btn = document.getElementById('btn-pause');
+    if (!btn) return;
+    btn.classList.toggle('paused', paused);
+    btn.innerHTML = paused ? '▶ Retomar' : '⏸ Pausar';
+  }
+
   togglePause() {
     if (!this.recorder) return;
 
+    // A deliberate tap always wins over the automatic state, in both directions.
+    this.autoPaused = false;
+
     if (this.recorder.isPaused) {
       this.recorder.resume();
-      const btn = document.getElementById('btn-pause');
-      if (btn) {
-        btn.classList.remove('paused');
-        btn.innerHTML = '⏸ Pausar';
-      }
+      this.setPauseButton(false);
     } else {
       this.recorder.pause();
-      const btn = document.getElementById('btn-pause');
-      if (btn) {
-        btn.classList.add('paused');
-        btn.innerHTML = '▶ Retomar';
-      }
+      this.setPauseButton(true);
     }
   }
 
@@ -1144,6 +1434,8 @@ class SpinSyncApp {
     this.summaryMode = mode;
     this.viewingSummary = summary;
     this.charts.destroyAll();
+    this.renderLaps(summary);
+    this.renderRPE(summary);
 
     // The two buttons used to be byte-identical copies of each other, and pressing
     // "Salvar" on a workout reopened from history silently duplicated it.
@@ -1196,6 +1488,69 @@ class SpinSyncApp {
     });
   }
 
+  // ── Perceived effort ──
+
+  /**
+   * Borg CR10 wording, condensed. Kept short because it is read on a phone right after a
+   * hard effort, not studied.
+   */
+  static RPE_LABELS = [
+    '', 'Muito leve', 'Leve', 'Moderado', 'Um pouco puxado', 'Puxado',
+    'Puxado', 'Muito puxado', 'Muito puxado', 'Quase no limite', 'Máximo',
+  ];
+
+  renderRPE(summary) {
+    const scale = document.getElementById('rpe-scale');
+    const note = document.getElementById('workout-note');
+    if (!scale) return;
+
+    const current = summary?.rpe || 0;
+
+    scale.innerHTML = Array.from({ length: 10 }, (_, i) => {
+      const value = i + 1;
+      // Colour walks the zone palette so the scale reads as effort, not as a rating.
+      const zone = ZONES[Math.min(4, Math.floor(i / 2))];
+      const filled = current > 0 && value <= current;
+      return `<button type="button" class="rpe-btn${filled ? ' filled' : ''}${value === current ? ' selected' : ''}"
+        style="${filled ? `background:${zone.color}` : ''}"
+        role="radio" aria-checked="${value === current}"
+        aria-label="Esforço ${value} de 10" data-rpe="${value}">${value}</button>`;
+    }).join('');
+
+    scale.querySelectorAll('.rpe-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.setRPE(parseInt(btn.dataset.rpe, 10)));
+    });
+
+    const hint = document.getElementById('rpe-hint');
+    if (hint) {
+      hint.textContent = current > 0
+        ? `${current}/10 · ${SpinSyncApp.RPE_LABELS[current]}`
+        : 'Toque para avaliar o esforço';
+    }
+
+    if (note) note.value = summary?.note || '';
+  }
+
+  setRPE(value) {
+    if (!this.viewingSummary) return;
+    // Tapping the current value clears it — the only way back out of a mis-tap.
+    this.viewingSummary.rpe = this.viewingSummary.rpe === value ? 0 : value;
+    this.renderRPE(this.viewingSummary);
+    this.persistSummaryEdits();
+  }
+
+  /** Writes RPE and note back onto the stored workout, in place. */
+  persistSummaryEdits() {
+    const summary = this.viewingSummary;
+    if (!summary?.id) return;
+    const note = document.getElementById('workout-note');
+    summary.note = note ? note.value.trim() : summary.note;
+    Storage.updateWorkout(summary.id, {
+      rpe: summary.rpe || 0,
+      note: summary.note || '',
+    });
+  }
+
   /**
    * Text equivalent of the zone chart. It is the one chart with no stat card duplicating
    * its numbers, so without this a screen reader gets nothing from it at all.
@@ -1211,6 +1566,67 @@ class SpinSyncApp {
       : 'Sem tempo registrado em nenhuma zona.';
   }
 
+  renderRecords() {
+    const card = document.getElementById('records-card');
+    const list = document.getElementById('records-list');
+    if (!card || !list) return;
+
+    const r = Analytics.getRecords();
+    if (!r) { card.hidden = true; return; }
+    card.hidden = false;
+
+    const when = (w) => new Date(w.date).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+    const hhmm = (secs) => {
+      const h = Math.floor(secs / 3600);
+      const m = Math.round((secs % 3600) / 60);
+      return h > 0 ? `${h}h ${m}m` : `${m} min`;
+    };
+
+    const rows = [
+      ['Treino mais longo', hhmm(r.longest.durationSeconds), when(r.longest)],
+      ['Mais calorias', `${r.mostCalories.calories} kcal`, when(r.mostCalories)],
+      ['FC mais alta', `${r.highestBPM.maxBPM} bpm`, when(r.highestBPM)],
+    ];
+    if (r.hardestSeconds > 0) {
+      rows.push(['Mais tempo em Z4+', hhmm(r.hardestSeconds), when(r.hardest)]);
+    }
+    rows.push(['Total acumulado', `${r.totalWorkouts} treinos · ${hhmm(r.totalSeconds)}`, '']);
+
+    list.innerHTML = rows.map(([label, value, date]) => `
+      <div class="record-row">
+        <span class="record-label">${escapeHtml(label)}</span>
+        <span class="record-value">${escapeHtml(value)}</span>
+        <span class="record-date">${escapeHtml(date)}</span>
+      </div>`).join('');
+  }
+
+  renderFitnessTrend() {
+    const card = document.getElementById('fitness-trend-card');
+    if (!card) return;
+
+    const trend = Analytics.getFitnessTrend();
+    // Needs at least two rides of one plan; below that there is no comparison to make.
+    if (!trend || trend.points.length < 2) { card.hidden = true; return; }
+    card.hidden = false;
+
+    const desc = document.getElementById('fitness-trend-desc');
+    if (desc) {
+      const delta = trend.deltaBPM;
+      const verdict = delta <= -3
+        ? `${Math.abs(delta)} bpm mais baixa para o mesmo esforço — sinal de ganho de condicionamento.`
+        : delta >= 3
+          ? `${delta} bpm mais alta. Pode ser fadiga, calor ou sono ruim.`
+          : 'Estável para o mesmo esforço.';
+      desc.textContent = `${trend.planName} · ${trend.points.length} repetições. ${verdict}`;
+    }
+
+    if (this.fitnessChart) {
+      this.fitnessChart.destroy();
+      this.fitnessChart = null;
+    }
+    this.fitnessChart = this.charts.renderFitnessTrend('chart-fitness', trend);
+  }
+
   renderAnalytics(period = 'week') {
     const stats = Analytics.getStats(period);
 
@@ -1224,6 +1640,11 @@ class SpinSyncApp {
     
     document.getElementById('analytics-avg-bpm').textContent = stats.avgBPM || '--';
     document.getElementById('analytics-avg-rpm').textContent = stats.avgRPM || '--';
+
+    // Records and the fitness trend read the whole history, so they ignore the period
+    // filter on purpose — a personal best is not a property of the last 7 days.
+    this.renderRecords();
+    this.renderFitnessTrend();
 
     // Render chart
     const canvas = document.getElementById('chart-analytics-calories');
@@ -1471,8 +1892,7 @@ class SpinSyncApp {
 
   showPlanDetail(plan) {
     this.selectedPlan = plan;
-    const profile = Storage.getProfile();
-    const maxHR = profile ? (220 - profile.age) : 192;
+    const zoneCalc = this.zoneCalcForProfile();
 
     document.getElementById('plan-emoji').textContent = plan.emoji;
     document.getElementById('plan-name').textContent = plan.name;
@@ -1485,7 +1905,7 @@ class SpinSyncApp {
     const timeline = document.getElementById('plan-timeline');
     timeline.innerHTML = plan.phases.map((phase, i) => {
       const zone = Plans.getPhaseZone(phase);
-      const bpm = Plans.resolvePhaseBPM(phase, maxHR);
+      const bpm = Plans.resolvePhaseBPM(phase, zoneCalc);
       return `
         <div class="phase-item">
           <div class="phase-track">
@@ -1582,6 +2002,9 @@ class SpinSyncApp {
 
     this.recorder = new WorkoutRecorder(profile);
     this.recorder.start();
+    // Um treino novo não herda a pausa automática do anterior.
+    this.autoPaused = false;
+    this.lastPedalAt = Date.now();
 
     this.showView('guided');
     this.requestWakeLock();
@@ -1656,6 +2079,7 @@ class SpinSyncApp {
     this.updateGuidedTimers(phase);
     this.updateGuidedTargets(dp);
     this.mirrorToWatch();
+    this.checkAutoPause();
 
     // Update calories
     document.getElementById('guided-calories').textContent = Math.round(dp.calories);
@@ -1678,9 +2102,8 @@ class SpinSyncApp {
     if (!plan) return;
     const phase = plan.phases[this.guidedPhaseIndex];
     const zone = Plans.getPhaseZone(phase);
-    const profile = Storage.getProfile();
-    const maxHR = profile ? (220 - profile.age) : 192;
-    const bpm = Plans.resolvePhaseBPM(phase, maxHR);
+    const zoneCalc = this.zoneCalcForProfile();
+    const bpm = Plans.resolvePhaseBPM(phase, zoneCalc);
 
     // Phase label & name
     document.getElementById('guided-phase-label').textContent =
@@ -1736,10 +2159,9 @@ class SpinSyncApp {
   }
 
   updateGuidedTargets(dp) {
-    const profile = Storage.getProfile();
-    const maxHR = profile ? (220 - profile.age) : 192;
+    const zoneCalc = this.zoneCalcForProfile();
     const phase = this.guidedPlan.phases[this.guidedPhaseIndex];
-    const bpmTarget = Plans.resolvePhaseBPM(phase, maxHR);
+    const bpmTarget = Plans.resolvePhaseBPM(phase, zoneCalc);
     const zone = Plans.getPhaseZone(phase);
 
     // BPM display
@@ -2031,6 +2453,13 @@ class SpinSyncApp {
     this.showView('plan-creator');
   }
 
+  updateCreatorTotal() {
+    const el = document.getElementById('creator-total');
+    if (!el) return;
+    const seconds = this.creatorPhases.reduce((sum, p) => sum + (p.duration || 0), 0);
+    el.textContent = Plans.formatDuration(seconds);
+  }
+
   renderCreatorPhases() {
     const container = document.getElementById('creator-phases');
     if (!container) return;
@@ -2038,6 +2467,14 @@ class SpinSyncApp {
     container.innerHTML = this.creatorPhases.map((phase, i) => `
       <div class="creator-phase-card">
         <div class="creator-phase-num" id="phase-${i}-num">Fase ${i + 1}</div>
+        <div class="creator-phase-tools">
+          <button class="creator-phase-tool" data-move="up" data-idx="${i}"
+                  ${i === 0 ? 'disabled' : ''} aria-label="Mover fase ${i + 1} para cima">↑</button>
+          <button class="creator-phase-tool" data-move="down" data-idx="${i}"
+                  ${i === this.creatorPhases.length - 1 ? 'disabled' : ''} aria-label="Mover fase ${i + 1} para baixo">↓</button>
+          <!-- Building an interval set meant retyping the same phase over and over. -->
+          <button class="creator-phase-tool" data-duplicate="${i}" aria-label="Duplicar fase ${i + 1}">⧉</button>
+        </div>
         <button class="creator-phase-remove" data-idx="${i}" aria-label="Remover fase ${i + 1}">✕</button>
         <div class="form-group" style="margin-bottom:8px">
           <!-- Every input carries a real id/for pair. A placeholder is not a label: it
@@ -2064,11 +2501,36 @@ class SpinSyncApp {
       </div>
     `).join('');
 
+    this.updateCreatorTotal();
+
     // Bind events
     container.querySelectorAll('.creator-phase-remove').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.dataset.idx);
         this.creatorPhases.splice(idx, 1);
+        this.renderCreatorPhases();
+      });
+    });
+
+    container.querySelectorAll('[data-move]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx);
+        const target = btn.dataset.move === 'up' ? idx - 1 : idx + 1;
+        if (target < 0 || target >= this.creatorPhases.length) return;
+        const phases = this.creatorPhases;
+        [phases[idx], phases[target]] = [phases[target], phases[idx]];
+        this.renderCreatorPhases();
+        // Follow the phase that moved, so repeated taps keep working without re-aiming.
+        container.querySelector(`[data-move="${btn.dataset.move}"][data-idx="${target}"]`)?.focus();
+      });
+    });
+
+    container.querySelectorAll('[data-duplicate]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.duplicate);
+        const source = this.creatorPhases[idx];
+        if (!source) return;
+        this.creatorPhases.splice(idx + 1, 0, { ...source });
         this.renderCreatorPhases();
       });
     });
@@ -2081,7 +2543,10 @@ class SpinSyncApp {
         if (!phase) return;
 
         if (field === 'name') phase.name = input.value;
-        if (field === 'duration') phase.duration = parseInt(input.value) * 60 || 60;
+        if (field === 'duration') {
+          phase.duration = parseInt(input.value) * 60 || 60;
+          this.updateCreatorTotal();
+        }
         if (field === 'zone') phase.zone = parseInt(input.value);
         if (field === 'rpm') {
           const parts = input.value.split('-').map(s => parseInt(s.trim()));

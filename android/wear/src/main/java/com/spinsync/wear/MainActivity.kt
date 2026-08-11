@@ -17,6 +17,7 @@ import java.util.Locale
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.wear.ambient.AmbientLifecycleObserver
 import com.spinsync.wear.databinding.ActivityMainBinding
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -26,6 +27,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private lateinit var binding: ActivityMainBinding
+    private var isAmbient = false
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -79,6 +81,22 @@ class MainActivity : ComponentActivity() {
             HrState.update { it.copy(status = BroadcastStatus.ERROR_NO_PERIPHERAL) }
         }
 
+        lifecycle.addObserver(
+            AmbientLifecycleObserver(this, object : AmbientLifecycleObserver.AmbientLifecycleCallback {
+                override fun onEnterAmbient(details: AmbientLifecycleObserver.AmbientDetails) {
+                    applyAmbient(true)
+                }
+
+                override fun onExitAmbient() {
+                    applyAmbient(false)
+                }
+
+                // Fires roughly once a minute in ambient; the state flow already drives the
+                // content, so there is nothing extra to redraw.
+                override fun onUpdateAmbient() { /* no-op */ }
+            })
+        )
+
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 HrState.flow.collectLatest(::render)
@@ -96,6 +114,27 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onStop()
+    }
+
+    // ── Ambient mode ─────────────────────────────────────────────────────────
+
+    /**
+     * Keeps the screen on, dimmed, instead of blanking mid-ride.
+     *
+     * FLAG_KEEP_SCREEN_ON only holds while the activity is interactive; the watch still
+     * went dark and a raised wrist showed an ordinary watch face. For an app whose whole
+     * job is being glanced at during a 45-minute effort, that was the wrong default.
+     */
+    private fun applyAmbient(ambient: Boolean) {
+        isAmbient = ambient
+
+        // Burn-in guidance: no large filled areas, thin strokes, muted colours.
+        binding.btnToggle.isVisible = !ambient
+        binding.zoneRing.ambient = ambient
+        binding.txtBpm.setTextColor(getColor(if (ambient) R.color.text_primary else R.color.hr_red))
+        binding.txtStatus.alpha = if (ambient) 0.6f else 1f
+        binding.txtNextPhase.alpha = if (ambient) 0.75f else 1f
+        binding.root.setBackgroundColor(getColor(android.R.color.black))
     }
 
     // ── Rendering ────────────────────────────────────────────────────────────
@@ -142,10 +181,13 @@ class MainActivity : ComponentActivity() {
      * its own; the phone pushes them over the vendor GATT service.
      */
     private fun renderWorkout(workout: WorkoutStatus) {
+        // The zone travels in the packet; the watch has no max HR of its own to derive it.
+        binding.zoneRing.zone = if (workout.active) workout.zone else 0
+
         binding.rowWorkout.isVisible = workout.active
         // Reclaim vertical space for the two new rows, so the button stays on screen.
-        binding.txtBpmUnit.isVisible = !workout.active
-        binding.txtSubscribers.isVisible = !workout.active
+        binding.txtBpmUnit.isVisible = !workout.active && !isAmbient
+        binding.txtSubscribers.isVisible = !workout.active && !isAmbient
 
         if (!workout.active) {
             binding.txtNextPhase.isVisible = false

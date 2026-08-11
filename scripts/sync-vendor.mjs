@@ -21,6 +21,7 @@ const FILES = [
   ['node_modules/@capacitor/app/dist/plugin.js', 'capacitor-app.js'],
   ['node_modules/@capacitor-community/bluetooth-le/dist/plugin.js', 'bluetooth-le.js'],
   ['node_modules/@capgo/capacitor-health/dist/plugin.js', 'capacitor-health.js'],
+  ['node_modules/@capacitor/filesystem/dist/plugin.js', 'capacitor-filesystem.js'],
   ['node_modules/chart.js/dist/chart.umd.js', 'chart.umd.js'],
 ];
 

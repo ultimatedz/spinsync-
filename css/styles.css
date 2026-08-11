@@ -2105,6 +2105,305 @@ body {
   margin-bottom: 4px;
 }
 
+/* ── Laps ── */
+.btn-lap {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.lap-banner {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.82rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.lap-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.85rem;
+}
+
+.lap-row:last-child { border-bottom: 0; }
+
+.lap-index {
+  width: 2.2em;
+  color: var(--text-tertiary);
+  font-weight: 700;
+}
+
+.lap-time {
+  flex: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.lap-meta {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Onboarding ── */
+.onboard-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.onboard-item:last-child { border-bottom: 0; }
+
+.onboard-icon {
+  font-size: 1.4rem;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+
+.onboard-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  margin-bottom: 3px;
+}
+
+.onboard-text {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+/* ── Plan creator ── */
+.creator-phases-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0 4px;
+  margin-bottom: 8px;
+}
+
+.creator-total {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reorder / duplicate, grouped opposite the remove button. */
+.creator-phase-tools {
+  position: absolute;
+  top: 8px;
+  right: 40px;
+  display: flex;
+  gap: 2px;
+}
+
+.creator-phase-tool {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition-fast);
+}
+
+.creator-phase-tool:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.creator-phase-tool:not(:disabled):hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* ── Analytics extras ── */
+.analytics-count {
+  font-size: 2rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.record-row:last-child { border-bottom: 0; }
+
+.record-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.record-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-date {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── Weekly goal (home) ── */
+.goal-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  margin-bottom: 16px;
+}
+
+.goal-info { flex: 1; min-width: 0; }
+
+.goal-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.goal-bar {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.goal-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent-gradient);
+  transition: width var(--transition-slow);
+}
+
+.goal-streak {
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.goal-streak-value {
+  font-size: 1.4rem;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.goal-streak-label {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── RPE (perceived effort) ── */
+.rpe-scale {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+
+.rpe-btn {
+  min-height: 44px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  padding: 0;
+}
+
+/* Everything up to the pick fills in, so the scale reads as a level and not as ten
+   unrelated buttons. */
+.rpe-btn.filled {
+  color: var(--text-primary);
+  border-color: transparent;
+}
+
+.rpe-btn.selected {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 1px;
+}
+
+.rpe-hint {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  min-height: 1.2em;
+}
+
+/* ── Zone preview (profile) ── */
+.zone-preview {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.zone-preview-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.zone-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.8rem;
+}
+
+.zone-preview-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.zone-preview-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zone-preview-range {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 /* ── Settings rows ── */
 .setting-row {
   display: flex;

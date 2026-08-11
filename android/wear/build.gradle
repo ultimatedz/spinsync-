@@ -63,6 +63,13 @@ dependencies {
     implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.8.7"
     implementation "androidx.wear:wear:1.3.0"
 
+    // Quick-start tile: one swipe from the watch face instead of digging through the
+    // app launcher with gloves on.
+    implementation "androidx.wear.tiles:tiles:1.4.1"
+    implementation "androidx.wear.protolayout:protolayout:1.2.1"
+    implementation "androidx.wear.protolayout:protolayout-material:1.2.1"
+    implementation "androidx.wear.protolayout:protolayout-expression:1.2.1"
+
     // Heart rate sampling
     implementation "androidx.health:health-services-client:1.0.0-rc02"
     implementation "androidx.concurrent:concurrent-futures-ktx:1.2.0"

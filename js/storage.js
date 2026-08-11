@@ -6,7 +6,10 @@ const DEFAULT_PROFILE = {
   age: 30,
   weight: 70,
   sex: 'M',
-  restingHR: 60
+  height: null,
+  restingHR: 60,
+  /** Measured max HR. null means "estimate it from age" — see js/physiology.js. */
+  maxHR: null
 };
 
 /**
@@ -123,6 +126,20 @@ export function clearSavedDevice(kind) {
   try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
 }
 
+/**
+ * Merges fields into a stored workout without rewriting the rest of it.
+ *
+ * Used for the things added after the ride — perceived effort and the note — which must
+ * not touch the recorded samples.
+ */
+export function updateWorkout(id, patch) {
+  const workouts = getWorkouts();
+  const index = workouts.findIndex(w => w.id === id);
+  if (index === -1) return false;
+  workouts[index] = { ...workouts[index], ...patch };
+  return writeJSON(WORKOUTS_KEY, workouts);
+}
+
 // ── Settings ──
 // Preferences that are neither profile data nor workout history.
 
@@ -130,6 +147,9 @@ const SETTINGS_KEY = 'spinsync_settings';
 
 const DEFAULT_SETTINGS = {
   haptics: true,
+  autoPause: true,
+  /** Sessões por semana. 0 desliga a meta. */
+  weeklyGoal: 3,
 };
 
 export function getSettings() {

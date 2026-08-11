@@ -4,8 +4,10 @@ import { CalorieCalculator } from './calorie-calculator.js';
 export class WorkoutRecorder {
   constructor(profile) {
     this.profile = profile;
-    this.zoneCalc = new ZoneCalculator(profile.age, profile.restingHR);
-    this.calorieCalc = new CalorieCalculator(profile.sex, profile.weight, profile.age);
+    this.zoneCalc = new ZoneCalculator(profile);
+    this.calorieCalc = new CalorieCalculator(
+      profile.sex, profile.weight, profile.age, profile.height
+    );
 
     this.reset();
   }
@@ -34,6 +36,10 @@ export class WorkoutRecorder {
     // Zone time tracking (in seconds)
     this.zoneTime = {};
     ZONES.forEach(z => this.zoneTime[z.id] = 0);
+
+    // Laps. Closed on demand; the segment still running is not in here.
+    this.laps = [];
+    this.lapStartMs = 0;
   }
 
   start() {
@@ -125,6 +131,43 @@ export class WorkoutRecorder {
     return dataPoint;
   }
 
+  /**
+   * Closes the running segment and starts a new one.
+   *
+   * Stats are computed from the recorded samples rather than tracked incrementally, so a
+   * lap costs nothing until it is actually marked and cannot drift from the data.
+   *
+   * @returns {null|object} the closed lap, or null if it would be empty.
+   */
+  markLap() {
+    const endMs = this.elapsedMs;
+    if (endMs - this.lapStartMs < 1000) return null;
+
+    const points = this.dataPoints.filter(
+      p => p.timestamp >= this.lapStartMs && p.timestamp < endMs
+    );
+    const bpms = points.map(p => p.bpm).filter(b => b > 0);
+    const rpms = points.map(p => p.rpm).filter(r => r > 0);
+    const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0);
+
+    const lap = {
+      index: this.laps.length + 1,
+      startMs: this.lapStartMs,
+      endMs,
+      durationSeconds: Math.round((endMs - this.lapStartMs) / 1000),
+      avgBPM: avg(bpms),
+      maxBPM: bpms.length ? Math.max(...bpms) : 0,
+      avgRPM: avg(rpms),
+      calories: points.length
+        ? Math.max(0, points[points.length - 1].calories - (points[0].calories || 0))
+        : 0,
+    };
+
+    this.laps.push(lap);
+    this.lapStartMs = endMs;
+    return lap;
+  }
+
   getElapsedSeconds() {
     return Math.floor(this.elapsedMs / 1000);
   }
@@ -175,6 +218,8 @@ export class WorkoutRecorder {
       rpmCount: this.rpmCount,
       rpmMax: this.rpmMax,
       zoneTime: { ...this.zoneTime },
+      laps: this.laps,
+      lapStartMs: this.lapStartMs,
       profile: { ...this.profile }
     };
   }
@@ -200,6 +245,8 @@ export class WorkoutRecorder {
     this.rpmCount = state.rpmCount;
     this.rpmMax = state.rpmMax;
     this.zoneTime = { ...state.zoneTime };
+    this.laps = state.laps || [];
+    this.lapStartMs = state.lapStartMs || 0;
     this.lastTickTime = Date.now();
 
     // Adjust timing: account for time spent on the page being closed
@@ -235,9 +282,14 @@ export class WorkoutRecorder {
       avgRPM: this.getAvgRPM(),
       maxRPM: this.rpmMax,
       zoneTime: { ...this.zoneTime },
+      laps: this.laps.slice(),
       dataPoints: this.dataPoints,
       profile: { ...this.profile },
-      maxHR: this.zoneCalc.getMaxHR()
+      // Snapshotted so a later profile edit cannot silently rewrite the intensity of
+      // rides that already happened.
+      maxHR: this.zoneCalc.getMaxHR(),
+      restingHR: this.zoneCalc.getRestingHR(),
+      reserveBased: this.zoneCalc.isReserveBased()
     };
   }
 }

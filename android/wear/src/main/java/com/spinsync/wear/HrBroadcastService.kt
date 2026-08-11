@@ -69,6 +69,12 @@ class HrBroadcastService : LifecycleService() {
 
         /** Low-rate heartbeat log, so a screen-off stall is visible in logcat. */
         private const val DIAG_INTERVAL_MS = 15_000L
+
+        /** How long off the prescribed zone before nudging. HR lags the pedals a lot. */
+        private const val ZONE_DRIFT_MS = 25_000L
+
+        /** A nag every 25s would be noise, not information. */
+        private const val ZONE_ALERT_COOLDOWN_MS = 60_000L
     }
 
     private lateinit var gatt: HrGattServer
@@ -88,6 +94,8 @@ class HrBroadcastService : LifecycleService() {
     @Volatile private var sensorStateSince = 0L
     @Volatile private var sessionTakenOver = false
     private var fakeWorkoutStartedAt = 0L
+    private var zoneDriftSince = 0L
+    private var lastZoneAlertAt = 0L
 
     private var lastNotifAt = 0L
     private var lastDiagAt = 0L
@@ -153,6 +161,7 @@ class HrBroadcastService : LifecycleService() {
         }
 
         handler.post(publishLoop)
+        requestTileUpdate(this)
     }
 
     private fun stopBroadcasting() {
@@ -168,6 +177,7 @@ class HrBroadcastService : LifecycleService() {
         releaseWakeLock()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         HrState.reset()
+        requestTileUpdate(this)
     }
 
     // ── Sampling and publishing ──────────────────────────────────────────────
@@ -321,8 +331,10 @@ class HrBroadcastService : LifecycleService() {
             is HrGattServer.GattEvent.HapticRequested ->
                 HapticPatterns.play(this, event.patternId)
 
-            is HrGattServer.GattEvent.WorkoutUpdated ->
+            is HrGattServer.GattEvent.WorkoutUpdated -> {
                 HrState.update { it.copy(workout = event.status) }
+                checkZoneDrift(event.status)
+            }
 
             is HrGattServer.GattEvent.Failed -> {
                 Log.e(LOG_TAG, "GATT failure: ${event.reason} — ${event.detail}")
@@ -334,6 +346,40 @@ class HrBroadcastService : LifecycleService() {
                 HrState.update { it.copy(status = status, detail = event.detail) }
             }
         }
+    }
+
+    /**
+     * Buzzes when the effort has drifted off the prescribed zone for long enough.
+     *
+     * Sustained, not instantaneous: heart rate lags the pedals by tens of seconds, so
+     * alerting on the first sample outside the window would fire on every phase change
+     * and train the rider to ignore it. Rate-limited for the same reason.
+     */
+    private fun checkZoneDrift(status: WorkoutStatus) {
+        val target = status.targetZone
+        val current = status.zone
+
+        val off = status.active && !status.paused && target > 0 && current > 0 &&
+            current != target
+        if (!off) {
+            zoneDriftSince = 0L
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (zoneDriftSince == 0L) {
+            zoneDriftSince = now
+            return
+        }
+        if (now - zoneDriftSince < ZONE_DRIFT_MS) return
+        if (now - lastZoneAlertAt < ZONE_ALERT_COOLDOWN_MS) return
+
+        lastZoneAlertAt = now
+        // Same vocabulary as the phase cues: up means push, down means ease off.
+        val pattern = if (current < target) HapticPatterns.PATTERN_PHASE_UP
+        else HapticPatterns.PATTERN_PHASE_DOWN
+        Log.i(LOG_TAG, "zone drift: current=$current target=$target -> haptic $pattern")
+        HapticPatterns.play(this, pattern)
     }
 
     // ── Bluetooth toggle recovery ────────────────────────────────────────────

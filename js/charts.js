@@ -232,6 +232,74 @@ export class WorkoutCharts {
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  /**
+   * Average heart rate across repeats of one plan.
+   *
+   * Not registered in this.charts: it lives on the analytics screen, which has its own
+   * lifecycle, while destroyAll() belongs to the workout summary.
+   *
+   * @returns {Chart|undefined} so the caller can destroy it on the next render.
+   */
+  renderFitnessTrend(canvasId, trend) {
+    const ctx = document.getElementById(canvasId)?.getContext('2d');
+    if (!ctx) return;
+
+    const labels = trend.points.map(p =>
+      new Date(p.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
+    const data = trend.points.map(p => p.avgBPM);
+
+    return new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'FC média',
+          data,
+          borderColor: '#4FC3F7',
+          backgroundColor: 'rgba(79, 195, 247, 0.12)',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#4FC3F7',
+          fill: true,
+          tension: 0.25,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 800, easing: 'easeOutQuart' },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#161B22',
+            titleColor: '#F0F6FC',
+            bodyColor: '#8B949E',
+            borderColor: '#30363D',
+            borderWidth: 1,
+            cornerRadius: 8,
+            displayColors: false,
+            callbacks: {
+              label: (c) => {
+                const point = trend.points[c.dataIndex];
+                return `${c.parsed.y} bpm · ${point.intensity}% de intensidade`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#8B949E', font: { size: 10 } } },
+          y: {
+            // Not zero-based on purpose: the interesting movement is a handful of bpm,
+            // and a zero baseline would flatten it into a straight line.
+            beginAtZero: false,
+            grid: { color: '#21262D' },
+            ticks: { color: '#8B949E', font: { size: 10 } },
+          },
+        },
+      },
+    });
+  }
+
   _reduceData(labels, data, maxPoints) {
     if (data.length <= maxPoints) {
       return { reducedLabels: labels, reducedData: data };
