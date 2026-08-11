@@ -154,6 +154,71 @@ export class WorkoutRecorder {
   }
 
   /**
+   * Serializa o estado completo do recorder para persistência.
+   */
+  getState() {
+    return {
+      startTime: this.startTime,
+      endTime: this.endTime,
+      elapsedMs: this.elapsedMs,
+      pausedMs: this.pausedMs,
+      isPaused: this.isPaused,
+      _pauseStart: this._pauseStart || null,
+      currentBPM: this.currentBPM,
+      currentRPM: this.currentRPM,
+      totalCalories: this.totalCalories,
+      dataPoints: this.dataPoints,
+      bpmSum: this.bpmSum,
+      bpmCount: this.bpmCount,
+      bpmMax: this.bpmMax,
+      rpmSum: this.rpmSum,
+      rpmCount: this.rpmCount,
+      rpmMax: this.rpmMax,
+      zoneTime: { ...this.zoneTime },
+      profile: { ...this.profile }
+    };
+  }
+
+  /**
+   * Restaura o estado do recorder a partir de dados salvos.
+   */
+  restoreState(state) {
+    this.startTime = state.startTime;
+    this.endTime = state.endTime;
+    this.elapsedMs = state.elapsedMs;
+    this.pausedMs = state.pausedMs;
+    this.isPaused = state.isPaused;
+    this._pauseStart = state._pauseStart;
+    this.currentBPM = state.currentBPM;
+    this.currentRPM = state.currentRPM;
+    this.totalCalories = state.totalCalories;
+    this.dataPoints = state.dataPoints || [];
+    this.bpmSum = state.bpmSum;
+    this.bpmCount = state.bpmCount;
+    this.bpmMax = state.bpmMax;
+    this.rpmSum = state.rpmSum;
+    this.rpmCount = state.rpmCount;
+    this.rpmMax = state.rpmMax;
+    this.zoneTime = { ...state.zoneTime };
+    this.lastTickTime = Date.now();
+
+    // Adjust timing: account for time spent on the page being closed
+    if (this.isPaused) {
+      // If it was paused, keep it paused — no adjustment needed
+    } else {
+      // Was actively recording — we lost time while page was closed
+      // Add the offline gap as paused time so elapsed doesn't jump
+      const offlineGap = Date.now() - (this.startTime + this.elapsedMs + this.pausedMs);
+      if (offlineGap > 0) {
+        this.pausedMs += offlineGap;
+      }
+      // Pause the workout on restore — user must explicitly resume
+      this.isPaused = true;
+      this._pauseStart = Date.now();
+    }
+  }
+
+  /**
    * Gera o resumo do treino para persistência e visualização.
    */
   getSummary() {
