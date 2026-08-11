@@ -789,7 +789,7 @@ class SpinSyncApp {
   openCoachPlan() {
     if (!this._coachPlanId) return;
     const plan = Plans.getAllPlans().find(p => p.id === this._coachPlanId);
-    if (plan) this.showPlanDetail(plan);
+    this.openPlanDetail(plan);
   }
 
   /**
@@ -845,7 +845,7 @@ class SpinSyncApp {
   openVerdictNext() {
     if (!this._verdictNextPlanId) return;
     const plan = Plans.getAllPlans().find(p => p.id === this._verdictNextPlanId);
-    if (plan) this.showPlanDetail(plan);
+    this.openPlanDetail(plan);
   }
 
   toggleDemo() {
@@ -1240,7 +1240,12 @@ class SpinSyncApp {
       name.style.color = zone ? zone.color : 'var(--text-tertiary)';
     }
     if (pctEl) {
-      pctEl.textContent = `${pct}% FC máx`;
+      // O rótulo tem que seguir o modelo em uso: com FC de repouso no perfil o número é
+      // % da *reserva*, não da máxima — 15 a 25 pontos de diferença. Dizer "FC máx" nos
+      // dois casos era simplesmente falso.
+      pctEl.textContent = this.recorder.zoneCalc.isReserveBased()
+        ? `${pct}% da reserva`
+        : `${pct}% FC máx`;
     }
   }
 
@@ -1372,8 +1377,16 @@ class SpinSyncApp {
     }).join('');
   }
 
+  /**
+   * Atualiza o botão de pausa da tela que está no ar.
+   *
+   * Antes só conhecia o botão do treino livre, mas o auto-pause roda nos dois ticks: no
+   * guiado o cronômetro parava e o botão continuava escrito "Pausar", de modo que tocá-lo
+   * *retomava* — o oposto do rótulo.
+   */
   setPauseButton(paused) {
-    const btn = document.getElementById('btn-pause');
+    const id = this.currentView === 'guided' ? 'btn-guided-pause' : 'btn-pause';
+    const btn = document.getElementById(id);
     if (!btn) return;
     btn.classList.toggle('paused', paused);
     btn.innerHTML = paused ? '▶ Retomar' : '⏸ Pausar';
@@ -1885,9 +1898,27 @@ class SpinSyncApp {
       card.addEventListener('click', () => {
         const id = card.dataset.planId;
         const plan = allPlans.find(p => p.id === id);
-        if (plan) this.showPlanDetail(plan);
+        this.openPlanDetail(plan);
       });
     });
+  }
+
+  /**
+   * Abre a tela de detalhe de um plano, sem deixar o toque morrer em silêncio.
+   *
+   * Um `ReferenceError` dentro de showPlanDetail deixava os cards de treino, o botão do
+   * coach e o do veredito completamente inertes: a exceção morria no console do handler e
+   * a tela simplesmente não trocava. Um erro visível teria custado minutos em vez de
+   * semanas com a funcionalidade principal do app fora do ar.
+   */
+  openPlanDetail(plan) {
+    if (!plan) return;
+    try {
+      this.showPlanDetail(plan);
+    } catch (e) {
+      console.error('[App] showPlanDetail falhou:', e);
+      this.toast('Não foi possível abrir este treino.', 'error');
+    }
   }
 
   showPlanDetail(plan) {
@@ -1931,7 +1962,7 @@ class SpinSyncApp {
     const btn = document.getElementById('btn-start-guided');
     if (btn) btn.disabled = false;
 
-    this.renderPlanLadderStatus(plan, profile);
+    this.renderPlanLadderStatus(plan, Storage.getProfile());
 
     // Custom plans can be deleted; the 12 pre-built ones cannot.
     const delBtn = document.getElementById('btn-delete-plan');
@@ -2208,15 +2239,15 @@ class SpinSyncApp {
 
   toggleGuidedPause() {
     if (!this.recorder) return;
-    if (this.recorder.isPaused) {
-      this.recorder.resume();
-      const btn = document.getElementById('btn-guided-pause');
-      if (btn) { btn.classList.remove('paused'); btn.innerHTML = '⏸ Pausar'; }
-    } else {
-      this.recorder.pause();
-      const btn = document.getElementById('btn-guided-pause');
-      if (btn) { btn.classList.add('paused'); btn.innerHTML = '▶ Retomar'; }
-    }
+
+    // Igual ao togglePause do treino livre: um toque deliberado sempre vence o estado
+    // automático. Sem isto, uma pausa manual podia ser desfeita pelo sensor de cadência.
+    this.autoPaused = false;
+
+    if (this.recorder.isPaused) this.recorder.resume();
+    else this.recorder.pause();
+
+    this.setPauseButton(this.recorder.isPaused);
   }
 
   stopGuidedWorkout() {
@@ -2339,6 +2370,10 @@ class SpinSyncApp {
 
     this.recorder = new WorkoutRecorder(profile);
     this.recorder.restoreState(saved.recorder);
+    // Sem isto o auto-pause fica morto após uma recuperação: checkAutoPause sai cedo
+    // enquanto lastPedalAt for 0, e ele só voltaria no primeiro evento de cadência.
+    this.autoPaused = false;
+    this.lastPedalAt = Date.now();
 
     this.demoMode = saved.demoMode || false;
     this.realtimeBPMHistory = [];
@@ -2399,6 +2434,10 @@ class SpinSyncApp {
 
     this.recorder = new WorkoutRecorder(profile);
     this.recorder.restoreState(saved.recorder);
+    // Sem isto o auto-pause fica morto após uma recuperação: checkAutoPause sai cedo
+    // enquanto lastPedalAt for 0, e ele só voltaria no primeiro evento de cadência.
+    this.autoPaused = false;
+    this.lastPedalAt = Date.now();
 
     // Show guided view
     this.showView('guided');

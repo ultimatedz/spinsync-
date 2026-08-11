@@ -6,7 +6,8 @@
   "scripts": {
     "vendor:sync": "node scripts/sync-vendor.mjs",
     "icons": "node scripts/gen-icons.mjs",
-    "build:web": "npm run vendor:sync && npm run icons && node scripts/build-web.mjs",
+    "vendor:check": "node scripts/check-vendor.mjs",
+    "build:web": "npm run vendor:sync && npm run vendor:check && npm run icons && node scripts/build-web.mjs",
     "cap:sync": "npm run build:web && npx cap sync android",
     "cap:open": "npx cap open android",
     "test": "echo \"Error: no test specified\" && exit 1",

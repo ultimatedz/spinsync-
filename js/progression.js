@@ -152,6 +152,8 @@ export function evaluateSession(summary, profile) {
     hrCoverage,
     rpmCoverage,
     avgIntensity,
+    /** Em qual modelo avgIntensity está expresso — o rótulo depende disto. */
+    reserveBased: zoneCalc.isReserveBased(),
     z5Share,
     overcooked,
     hasHR,
@@ -266,8 +268,11 @@ function buildReasons(e) {
 
   if (e.avgIntensity !== null) {
     const pct = Math.round(e.avgIntensity * 100);
-    if (e.overcooked) out.push({ good: false, text: `Intensidade média em ${pct}% da FC máxima — acima do prescrito` });
-    else out.push({ good: true, text: `Intensidade média em ${pct}% da FC máxima` });
+    // avgIntensity vem de zoneCalc.intensityOf(), que é % da reserva quando há FC de
+    // repouso no perfil. Chamar isso de "FC máxima" inflava o número em 15-25 pontos.
+    const base = e.reserveBased ? 'da reserva de FC' : 'da FC máxima';
+    if (e.overcooked) out.push({ good: false, text: `Intensidade média em ${pct}% ${base} — acima do prescrito` });
+    else out.push({ good: true, text: `Intensidade média em ${pct}% ${base}` });
   }
 
   out.push({ good: true, text: `${e.calories} kcal queimadas` });

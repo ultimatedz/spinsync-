@@ -21,6 +21,10 @@ const FILES = [
   ['node_modules/@capacitor/app/dist/plugin.js', 'capacitor-app.js'],
   ['node_modules/@capacitor-community/bluetooth-le/dist/plugin.js', 'bluetooth-le.js'],
   ['node_modules/@capgo/capacitor-health/dist/plugin.js', 'capacitor-health.js'],
+  // O bundle do Filesystem fecha com `})({}, capacitorExports, synapse)`: é o único plugin
+  // aqui que declara essa terceira dependência, então ela também precisa ser vendorizada,
+  // e antes dele. Sem isso o script lança na carga e o plugin some em silêncio.
+  ['node_modules/@capacitor/synapse/dist/synapse.js', 'capacitor-synapse.js'],
   ['node_modules/@capacitor/filesystem/dist/plugin.js', 'capacitor-filesystem.js'],
   ['node_modules/chart.js/dist/chart.umd.js', 'chart.umd.js'],
 ];

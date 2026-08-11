@@ -26,6 +26,7 @@ const PRECACHE_URLS = [
   './js/vendor/capacitor-app.js',
   './js/vendor/bluetooth-le.js',
   './js/vendor/capacitor-health.js',
+  './js/vendor/capacitor-synapse.js',
   './js/vendor/capacitor-filesystem.js',
   './js/tcx-export.js',
   './js/auto-backup.js',

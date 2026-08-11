@@ -379,7 +379,9 @@
           </div>
           <div class="zone-label">
             <span class="zone-name" id="zone-name">Sem dados</span>
-            <span class="zone-pct" id="zone-pct">0% FC máx</span>
+            <!-- Texto real definido em updateZoneBar: "% da reserva" ou "% FC máx",
+                 conforme o modelo de zonas do perfil. -->
+            <span class="zone-pct" id="zone-pct">0%</span>
           </div>
         </div>
 
@@ -860,6 +862,12 @@
   <script src="js/vendor/capacitor-app.js"></script>
   <script src="js/vendor/bluetooth-le.js"></script>
   <script src="js/vendor/capacitor-health.js"></script>
+  <script src="js/vendor/capacitor-synapse.js"></script>
+  <script>
+    // O UMD do @capacitor/synapse publica o global como `outsystemsSynapse`, mas o bundle
+    // do Filesystem fecha com `})({}, capacitorExports, synapse)` e exige esse nome exato.
+    var synapse = window.outsystemsSynapse;
+  </script>
   <script src="js/vendor/capacitor-filesystem.js"></script>
   <script src="js/vendor/chart.umd.js"></script>
 

@@ -24,9 +24,12 @@ export async function init() {
     const Capacitor = window.Capacitor;
     if (!Capacitor?.isNativePlatform?.()) return false;
 
-    const plugin = window.capacitorFilesystem;
+    // Nome do global conferido no próprio bundle vendorizado, não por grep: um `grep
+    // capacitorFilesystem` casa por substring dentro de `capacitorFilesystemPluginCapacitor`
+    // e dá falso positivo — foi exatamente assim que este plugin ficou morto sem ninguém ver.
+    const plugin = window.capacitorFilesystemPluginCapacitor;
     if (!plugin?.Filesystem) {
-      console.log('[AutoBackup] Filesystem plugin unavailable');
+      console.warn('[AutoBackup] bundle do Filesystem não carregou — backup automático off');
       return false;
     }
     Filesystem = plugin.Filesystem;
