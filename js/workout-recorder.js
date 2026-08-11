@@ -1,6 +1,30 @@
 import { ZoneCalculator, ZONES } from './zone-calculator.js';
 import { CalorieCalculator } from './calorie-calculator.js';
 
+/** Duas fontes de tick (timer do JS + heartbeat nativo) podem coincidir; abaixo disto é eco. */
+const MIN_TICK_MS = 500;
+
+/**
+ * Teto do intervalo creditado a calorias e tempo em zona.
+ *
+ * Precisa ser MAIOR que o pior atraso legítimo: o Chromium degrada timers de página oculta
+ * até uma acordada por minuto, então um intervalo de 60 s é normal e saudável — cortar em
+ * 10 s reintroduziria exatamente o sub-registro que esta mudança existe para consertar.
+ * 90 s dá folga sobre esse pior caso e ainda impede que um processo suspenso por 5 minutos
+ * injete 5 minutos de esforço fictício de uma vez.
+ */
+const MAX_CREDIT_MS = 90_000;
+
+/**
+ * Idade máxima da última amostra para ela ainda valer como "o esforço agora".
+ *
+ * Esta é a trava de segurança de verdade, não o teto acima: as notificações BLE chegam por
+ * callback nativo, que não sofre throttling. Se o processo está vivo mas apenas desacelerado,
+ * a FC continua fresca e o intervalo inteiro é legítimo; se o processo foi suspenso, a FC
+ * envelhece junto e nada é creditado. Mesma janela do watchdog de link em ble-manager.js.
+ */
+const SAMPLE_STALE_MS = 12_000;
+
 export class WorkoutRecorder {
   constructor(profile) {
     this.profile = profile;
@@ -33,9 +57,19 @@ export class WorkoutRecorder {
     this.rpmCount = 0;
     this.rpmMax = 0;
 
-    // Zone time tracking (in seconds)
-    this.zoneTime = {};
-    ZONES.forEach(z => this.zoneTime[z.id] = 0);
+    // Tempo em zona acumulado em MILISSEGUNDOS, arredondado só na saída — acumular em
+    // segundos truncados fazia a soma derivar alguns segundos por treino.
+    this.zoneTimeMs = {};
+    ZONES.forEach(z => this.zoneTimeMs[z.id] = 0);
+
+    // Tempo decorrido sem zona atribuível (sem cinta, sem contato, ou abaixo do piso da Z1).
+    // Sem isto, sum(zoneTime) < durationSeconds e não havia como saber se a diferença era
+    // um bug de contagem ou ausência legítima de sinal.
+    this.unclassifiedMs = 0;
+
+    // Quando cada sensor falou pela última vez. Ver SAMPLE_STALE_MS.
+    this.lastBpmAt = 0;
+    this.lastRpmAt = 0;
 
     // Laps. Closed on demand; the segment still running is not in here.
     this.laps = [];
@@ -69,66 +103,90 @@ export class WorkoutRecorder {
       this.pausedMs += Date.now() - this._pauseStart;
       this.isPaused = false;
     }
+    // elapsedMs vinha do último tick e podia estar até um intervalo inteiro atrasado —
+    // muito, se o app estava em segundo plano quando o treino foi encerrado.
+    this.elapsedMs = this.endTime - this.startTime - this.pausedMs;
   }
 
   updateBPM(bpm) {
     this.currentBPM = bpm;
+    this.lastBpmAt = Date.now();
   }
 
   updateRPM(rpm) {
     this.currentRPM = rpm;
+    this.lastRpmAt = Date.now();
   }
 
   /**
-   * Deve ser chamado a cada segundo durante o treino.
-   * Registra o data point e atualiza métricas.
+   * Chamado a cada ~1 s durante o treino. Registra o data point e atualiza as métricas.
+   *
+   * Credita o intervalo REAL desde o tick anterior, não 1 segundo fixo. Com tela apagada ou
+   * app em segundo plano, o WebView desacelera os timers até uma acordada por minuto: assumir
+   * 1 s por tick fazia calorias e tempo em zona ficarem dezenas de vezes menores que a
+   * duração, que sempre foi medida por relógio de parede. A divergência era silenciosa —
+   * `durationSeconds` certo, todo o resto errado.
    */
   tick() {
     if (this.isPaused || !this.startTime) return null;
 
     const now = Date.now();
+    const rawDt = now - (this.lastTickTime || now);
+    // Eco entre o timer do JS e o heartbeat nativo: os dois chamam este método.
+    if (this.dataPoints.length && rawDt < MIN_TICK_MS) return null;
+
     this.elapsedMs = now - this.startTime - this.pausedMs;
 
-    const bpm = this.currentBPM;
-    const rpm = this.currentRPM;
+    // Amostra velha significa esforço desconhecido, não esforço zero: extrapolar o último
+    // BPM às cegas por um minuto inventaria calorias que ninguém queimou.
+    const bpm = this.lastBpmAt && now - this.lastBpmAt <= SAMPLE_STALE_MS ? this.currentBPM : 0;
+    const rpm = this.lastRpmAt && now - this.lastRpmAt <= SAMPLE_STALE_MS ? this.currentRPM : 0;
+
     const zone = this.zoneCalc.getZone(bpm);
     const zoneId = zone ? zone.id : 0;
 
-    // Calorie increment (1 second)
-    if (bpm > 0) {
-      const calIncrement = this.calorieCalc.calculateIncremental(bpm, 1);
-      this.totalCalories += calIncrement;
-    }
+    const dtMs = Math.min(rawDt, MAX_CREDIT_MS);
+    const dtSec = dtMs / 1000;
 
-    // Aggregates
     if (bpm > 0) {
-      this.bpmSum += bpm;
-      this.bpmCount++;
+      this.totalCalories += this.calorieCalc.calculateIncremental(bpm, dtSec);
+      // Somas ponderadas por tempo: com amostragem irregular, contar amostras daria peso
+      // igual a um tick de 1 s e a um de 60 s.
+      this.bpmSum += bpm * dtSec;
+      this.bpmCount += dtSec;
       if (bpm > this.bpmMax) this.bpmMax = bpm;
     }
     if (rpm > 0) {
-      this.rpmSum += rpm;
-      this.rpmCount++;
+      this.rpmSum += rpm * dtSec;
+      this.rpmCount += dtSec;
       if (rpm > this.rpmMax) this.rpmMax = rpm;
     }
 
-    // Zone time
-    if (zoneId > 0) {
-      this.zoneTime[zoneId] = (this.zoneTime[zoneId] || 0) + 1;
-    }
+    if (zoneId > 0) this.zoneTimeMs[zoneId] = (this.zoneTimeMs[zoneId] || 0) + dtMs;
+    else this.unclassifiedMs += dtMs;
 
     const dataPoint = {
       timestamp: this.elapsedMs,
       bpm,
       rpm,
       zoneId,
-      calories: Math.round(this.totalCalories)
+      calories: Math.round(this.totalCalories),
+      // Quanto tempo esta amostra representa. Consumidores antigos ignoram; quem pondera
+      // usa `dp.dtMs || 1000`, que é exatamente o certo para dados gravados antes disto.
+      dtMs: Math.round(rawDt),
     };
 
     this.dataPoints.push(dataPoint);
     this.lastTickTime = now;
 
     return dataPoint;
+  }
+
+  /** Tempo em zona em segundos — a forma que todo o resto do app consome. */
+  getZoneTime() {
+    const out = {};
+    ZONES.forEach(z => out[z.id] = Math.round((this.zoneTimeMs[z.id] || 0) / 1000));
+    return out;
   }
 
   /**
@@ -217,7 +275,10 @@ export class WorkoutRecorder {
       rpmSum: this.rpmSum,
       rpmCount: this.rpmCount,
       rpmMax: this.rpmMax,
-      zoneTime: { ...this.zoneTime },
+      zoneTimeMs: { ...this.zoneTimeMs },
+      unclassifiedMs: this.unclassifiedMs,
+      lastBpmAt: this.lastBpmAt,
+      lastRpmAt: this.lastRpmAt,
       laps: this.laps,
       lapStartMs: this.lapStartMs,
       profile: { ...this.profile }
@@ -244,7 +305,13 @@ export class WorkoutRecorder {
     this.rpmSum = state.rpmSum;
     this.rpmCount = state.rpmCount;
     this.rpmMax = state.rpmMax;
-    this.zoneTime = { ...state.zoneTime };
+    // Aceita os dois formatos: um treino ativo salvo pela versão anterior guardava
+    // zoneTime em segundos.
+    this.zoneTimeMs = state.zoneTimeMs
+      || Object.fromEntries(Object.entries(state.zoneTime || {}).map(([k, v]) => [k, v * 1000]));
+    this.unclassifiedMs = state.unclassifiedMs || 0;
+    this.lastBpmAt = state.lastBpmAt || 0;
+    this.lastRpmAt = state.lastRpmAt || 0;
     this.laps = state.laps || [];
     this.lapStartMs = state.lapStartMs || 0;
     this.lastTickTime = Date.now();
@@ -281,7 +348,11 @@ export class WorkoutRecorder {
       maxBPM: this.bpmMax,
       avgRPM: this.getAvgRPM(),
       maxRPM: this.rpmMax,
-      zoneTime: { ...this.zoneTime },
+      zoneTime: this.getZoneTime(),
+      // Tempo sem zona atribuível. Fecha o invariante
+      // sum(zoneTime) + unclassifiedSeconds === durationSeconds, que sem isto não fechava e
+      // não havia como distinguir falta de sinal de erro de contagem.
+      unclassifiedSeconds: Math.round(this.unclassifiedMs / 1000),
       laps: this.laps.slice(),
       dataPoints: this.dataPoints,
       profile: { ...this.profile },

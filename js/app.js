@@ -75,6 +75,7 @@ class SpinSyncApp {
     this.bindEvents();
     this.setupBackHandler();
     this.setupModalDismiss();
+    this.setupLifecycleHandlers();
     this.updateBottomNav();
 
     // Check for active workout to recover
@@ -1077,6 +1078,7 @@ class SpinSyncApp {
     // Um treino novo não herda a pausa automática do anterior.
     this.autoPaused = false;
     this.lastPedalAt = Date.now();
+    this._persistWarned = false;
 
     const lapBanner = document.getElementById('lap-banner');
     if (lapBanner) lapBanner.hidden = true;
@@ -1841,10 +1843,50 @@ class SpinSyncApp {
     try {
       if ('wakeLock' in navigator) {
         this.wakeLock = await navigator.wakeLock.request('screen');
+        // O sistema libera o lock sozinho ao esconder a aba; sem saber disso, o app achava
+        // que ainda o tinha e a tela voltava a apagar no meio do treino.
+        this.wakeLock.addEventListener?.('release', () => { this.wakeLock = null; });
       }
     } catch (err) {
       console.log('Wake Lock não disponível:', err);
     }
+  }
+
+  /**
+   * Reage ao app sair e voltar do segundo plano.
+   *
+   * Não existia nada disto: nem `visibilitychange`, nem `pagehide`, nem o `appStateChange`
+   * do Capacitor. Duas consequências, as duas ruins no mesmo momento — quando o usuário
+   * guarda o celular no bolso:
+   *
+   *  - o estado do treino só era salvo dentro do tick, e o tick sai cedo quando pausado,
+   *    então nada era gravado justamente quando o Android está mais propenso a matar o
+   *    processo;
+   *  - o wake lock nunca era readquirido ao voltar.
+   */
+  setupLifecycleHandlers() {
+    const save = () => {
+      if (!this.recorder) return;
+      this.persistWorkoutState(this.guidedPlan ? 'guided' : 'free');
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        save();
+      } else if (this.recorder && !this.wakeLock) {
+        this.requestWakeLock();
+      }
+    });
+
+    // pagehide cobre o fechamento da aba, que não dispara visibilitychange em todo browser.
+    window.addEventListener('pagehide', save);
+
+    // No APK a WebView pode nem receber os eventos de página; o Capacitor avisa antes.
+    const CapApp = window.capacitorApp?.App;
+    CapApp?.addListener?.('appStateChange', ({ isActive }) => {
+      if (!isActive) save();
+      else if (this.recorder && !this.wakeLock) this.requestWakeLock();
+    });
   }
 
   releaseWakeLock() {
@@ -2030,12 +2072,17 @@ class SpinSyncApp {
     this.guidedTotalElapsed = 0;
     this.guidedCurrentBPM = 0;
     this.guidedCurrentRPM = 0;
+    // Travas dos avisos hápticos. Se vazarem de uma sessão para a outra, o aviso
+    // simplesmente nunca mais toca — falha silenciosa e difícil de perceber.
+    this._phaseWarnFired = false;
+    this._finalWarnFired = false;
 
     this.recorder = new WorkoutRecorder(profile);
     this.recorder.start();
     // Um treino novo não herda a pausa automática do anterior.
     this.autoPaused = false;
     this.lastPedalAt = Date.now();
+    this._persistWarned = false;
 
     this.showView('guided');
     this.requestWakeLock();
@@ -2053,6 +2100,27 @@ class SpinSyncApp {
     this.tickInterval = setInterval(() => this.guidedTick(), 1000);
   }
 
+  /**
+   * Qual fase estava rodando em `elapsedSec` de treino.
+   *
+   * Percorre a MESMA soma cumulativa de `phase.duration` que progression.js usa para julgar
+   * a sessão. Por construção, o que a tela mostra e o que o avaliador vê deixam de poder
+   * divergir — antes a tela contava ticks e o avaliador usava timestamps de relógio de
+   * parede, então bastava o app ficar em segundo plano para as amostras serem atribuídas às
+   * fases erradas.
+   */
+  phaseAt(plan, elapsedSec) {
+    let acc = 0;
+    for (let i = 0; i < plan.phases.length; i++) {
+      const end = acc + plan.phases[i].duration;
+      if (elapsedSec < end) {
+        return { index: i, phase: plan.phases[i], into: elapsedSec - acc, remaining: end - elapsedSec };
+      }
+      acc = end;
+    }
+    return null; // plano terminado
+  }
+
   guidedTick() {
     if (!this.recorder || !this.guidedPlan) return;
     if (this.recorder.isPaused) return;
@@ -2060,68 +2128,69 @@ class SpinSyncApp {
     const dp = this.recorder.tick();
     if (!dp) return;
 
-    this.guidedPhaseElapsed++;
-    this.guidedTotalElapsed++;
+    // Única fonte de verdade: o relógio do recorder, que já desconta as pausas.
+    const total = Math.floor(this.recorder.elapsedMs / 1000);
+    this.guidedTotalElapsed = total;
 
-    const phase = this.guidedPlan.phases[this.guidedPhaseIndex];
-    if (!phase) return;
-
-    const planTotal = Plans.getPlanDuration(this.guidedPlan);
-
-    // Heads-up buzz 5s before the effort changes, and again 10s before the whole thing
-    // ends — riding indoors you are rarely looking at the screen.
-    if (phase.duration - this.guidedPhaseElapsed === HAPTIC_WARNING_LEAD) {
-      Haptics.cue('phaseWarning');
-    }
-    if (planTotal - this.guidedTotalElapsed === HAPTIC_FINAL_LEAD) {
-      Haptics.cue('finalStretch');
+    const slot = this.phaseAt(this.guidedPlan, total);
+    if (!slot) {
+      Haptics.cue('workoutEnd');
+      this.stopGuidedWorkout();
+      return;
     }
 
-    // Check phase completion
-    if (this.guidedPhaseElapsed >= phase.duration) {
-      if (this.guidedPhaseIndex < this.guidedPlan.phases.length - 1) {
-        const previousZone = phase.zone;
-        this.guidedPhaseIndex++;
-        this.guidedPhaseElapsed = 0;
+    // Voltamos de um período em segundo plano? Então avisos já vencidos não devem tocar.
+    const jumped = (dp.dtMs || 1000) > 30_000;
 
-        // Distinct pattern per direction, so the wrist alone tells you whether to push
-        // or to back off.
-        const nextZone = this.guidedPlan.phases[this.guidedPhaseIndex].zone;
-        if (nextZone > previousZone) Haptics.cue('phaseUp');
-        else if (nextZone < previousZone) Haptics.cue('phaseDown');
-        else Haptics.cue('phaseSame');
+    if (slot.index !== this.guidedPhaseIndex) {
+      const previousZone = this.guidedPlan.phases[this.guidedPhaseIndex]?.zone ?? slot.phase.zone;
+      // Salta quantas fases forem necessárias de uma vez — o código antigo avançava uma só,
+      // então um intervalo grande deixava a tela numa fase que já tinha acabado.
+      this.guidedPhaseIndex = slot.index;
+      this._phaseWarnFired = false;
 
-        this.updateGuidedPhaseUI();
-        // Flash animation
-        const header = document.querySelector('.guided-header');
-        if (header) {
-          header.classList.add('phase-transition');
-          setTimeout(() => header.classList.remove('phase-transition'), 1500);
-        }
-      } else {
-        // Plan complete!
-        Haptics.cue('workoutEnd');
-        this.stopGuidedWorkout();
-        return;
+      // Padrão distinto por direção, para o pulso sozinho dizer se é para forçar ou aliviar.
+      if (slot.phase.zone > previousZone) Haptics.cue('phaseUp');
+      else if (slot.phase.zone < previousZone) Haptics.cue('phaseDown');
+      else Haptics.cue('phaseSame');
+
+      this.updateGuidedPhaseUI();
+      const header = document.querySelector('.guided-header');
+      if (header) {
+        header.classList.add('phase-transition');
+        setTimeout(() => header.classList.remove('phase-transition'), 1500);
       }
     }
 
-    // Update UI
-    this.updateGuidedTimers(phase);
+    // Cache derivado: updateGuidedTimers, mirrorToWatch e a barra de progresso seguem lendo.
+    this.guidedPhaseElapsed = slot.into;
+
+    // Avisos por limiar com trava, não por igualdade: `=== HAPTIC_WARNING_LEAD` significava
+    // que um único tick perdido pulava o aviso inteiro.
+    const planTotal = Plans.getPlanDuration(this.guidedPlan);
+    const hasNext = this.guidedPhaseIndex < this.guidedPlan.phases.length - 1;
+
+    if (!this._phaseWarnFired && hasNext && !jumped
+        && slot.remaining > 0 && slot.remaining <= HAPTIC_WARNING_LEAD) {
+      this._phaseWarnFired = true;
+      Haptics.cue('phaseWarning');
+    }
+    if (!this._finalWarnFired && !jumped && planTotal - total <= HAPTIC_FINAL_LEAD) {
+      this._finalWarnFired = true;
+      Haptics.cue('finalStretch');
+    }
+
+    this.updateGuidedTimers(slot.phase);
     this.updateGuidedTargets(dp);
     this.mirrorToWatch();
     this.checkAutoPause();
 
-    // Update calories
     document.getElementById('guided-calories').textContent = Math.round(dp.calories);
 
-    // Overall progress
-    const total = Plans.getPlanDuration(this.guidedPlan);
-    const pct = Math.min(100, (this.guidedTotalElapsed / total) * 100);
+    const pct = Math.min(100, (total / planTotal) * 100);
     const fill = document.getElementById('guided-overall-fill');
     if (fill) fill.style.width = `${pct}%`;
 
-    // Persist state every 5 seconds
     this.persistCounter++;
     if (this.persistCounter % 5 === 0) {
       this.persistWorkoutState('guided');
@@ -2308,7 +2377,14 @@ class SpinSyncApp {
         const step = Math.ceil(toSave.recorder.dataPoints.length / 300);
         toSave.recorder.dataPoints = toSave.recorder.dataPoints.filter((_, i) => i % step === 0);
       }
-      Storage.saveActiveWorkout(toSave);
+      const ok = Storage.saveActiveWorkout(toSave);
+      // Falhar aqui significa que a recuperação de sessão parou de funcionar. Era só um
+      // console.warn: o usuário seguia o treino inteiro achando que estava protegido.
+      // Avisa uma vez por treino, para não virar barulho a cada 5 s.
+      if (!ok && !this._persistWarned) {
+        this._persistWarned = true;
+        this.toast('Armazenamento cheio: este treino não poderá ser recuperado se o app fechar.', 'error', 6000);
+      }
     } catch (e) {
       console.warn('Failed to persist workout state:', e);
     }
@@ -2374,6 +2450,7 @@ class SpinSyncApp {
     // enquanto lastPedalAt for 0, e ele só voltaria no primeiro evento de cadência.
     this.autoPaused = false;
     this.lastPedalAt = Date.now();
+    this._persistWarned = false;
 
     this.demoMode = saved.demoMode || false;
     this.realtimeBPMHistory = [];
@@ -2427,17 +2504,26 @@ class SpinSyncApp {
     }
 
     this.guidedPlan = plan;
-    this.guidedPhaseIndex = saved.guidedPhaseIndex || 0;
-    this.guidedPhaseElapsed = saved.guidedPhaseElapsed || 0;
-    this.guidedTotalElapsed = saved.guidedTotalElapsed || 0;
     this.demoMode = saved.demoMode || false;
+    this._phaseWarnFired = false;
+    this._finalWarnFired = false;
 
     this.recorder = new WorkoutRecorder(profile);
     this.recorder.restoreState(saved.recorder);
+
+    // Índice derivado do relógio, não lido do estado salvo: um scratch state gravado pela
+    // versão antiga contava ticks e estava atrasado em relação ao tempo real. Assim ele se
+    // conserta sozinho na primeira retomada.
+    const resumedAt = Math.floor(this.recorder.elapsedMs / 1000);
+    const slot = this.phaseAt(plan, resumedAt);
+    this.guidedPhaseIndex = slot ? slot.index : (saved.guidedPhaseIndex || 0);
+    this.guidedPhaseElapsed = slot ? slot.into : (saved.guidedPhaseElapsed || 0);
+    this.guidedTotalElapsed = resumedAt;
     // Sem isto o auto-pause fica morto após uma recuperação: checkAutoPause sai cedo
     // enquanto lastPedalAt for 0, e ele só voltaria no primeiro evento de cadência.
     this.autoPaused = false;
     this.lastPedalAt = Date.now();
+    this._persistWarned = false;
 
     // Show guided view
     this.showView('guided');

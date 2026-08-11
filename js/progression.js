@@ -37,6 +37,9 @@ const SCORE_QUALIFY = 70;      // counts as consistent, but not promotion on its
 const MIN_COMPLETION = 0.97;   // essentially the whole plan
 const SENSOR_MIN_COVERAGE = 0.5;
 
+/** Esforço percebido até aqui significa que a sessão não testou nada. */
+const RPE_TOO_EASY = 3;
+
 /** Beyond this the session was harder than prescribed, not better. */
 const OVERCOOK_INTENSITY = 0.92;   // avg BPM as a fraction of max HR
 const OVERCOOK_Z5_SHARE = 0.25;    // fraction of time in zone 5
@@ -82,47 +85,55 @@ export function evaluateSession(summary, profile) {
 
   const points = Array.isArray(summary.dataPoints) ? summary.dataPoints : [];
 
-  let hrSamples = 0, hrOnTarget = 0, hrClose = 0;
-  let rpmSamples = 0, rpmOnTarget = 0, rpmClose = 0;
-  let totalSamples = 0;
+  // Tudo ponderado por SEGUNDOS, não por número de amostras.
+  //
+  // A amostragem não é uniforme: com o app em segundo plano um data point pode representar
+  // 60 s em vez de 1 s. Contar amostras dava a esses 60 s o mesmo peso de um segundo bem
+  // amostrado, distorcendo aderência e cobertura. `dp.dtMs || 1000` mantém a compatibilidade
+  // com tudo que foi gravado antes de dtMs existir — lá o intervalo era mesmo 1 s.
+  let hrSeconds = 0, hrOnTarget = 0, hrClose = 0;
+  let rpmSeconds = 0, rpmOnTarget = 0, rpmClose = 0;
+  let totalSeconds = 0;
   let z5Seconds = 0;
 
   for (const dp of points) {
     const sec = Math.floor((dp.timestamp || 0) / 1000);
     const slot = bounds.find(b => sec >= b.start && sec < b.end);
     if (!slot) continue;
-    totalSamples++;
 
-    if (dp.zoneId === 5) z5Seconds++;
+    const weight = (dp.dtMs || 1000) / 1000;
+    totalSeconds += weight;
+
+    if (dp.zoneId === 5) z5Seconds += weight;
 
     if (dp.bpm > 0) {
-      hrSamples++;
+      hrSeconds += weight;
       const target = Plans.resolvePhaseBPM(slot.phase, zoneCalc);
       const verdict = Plans.evaluateTarget(dp.bpm, target.min, target.max);
-      if (verdict === 'on_target') hrOnTarget++;
-      else if (verdict === 'close_below' || verdict === 'close_above') hrClose++;
+      if (verdict === 'on_target') hrOnTarget += weight;
+      else if (verdict === 'close_below' || verdict === 'close_above') hrClose += weight;
     }
 
     if (dp.rpm > 0) {
-      rpmSamples++;
+      rpmSeconds += weight;
       const verdict = Plans.evaluateTarget(dp.rpm, slot.phase.rpmMin, slot.phase.rpmMax);
-      if (verdict === 'on_target') rpmOnTarget++;
-      else if (verdict === 'close_below' || verdict === 'close_above') rpmClose++;
+      if (verdict === 'on_target') rpmOnTarget += weight;
+      else if (verdict === 'close_below' || verdict === 'close_above') rpmClose += weight;
     }
   }
 
   // "Close" counts as half credit — near the window is worth something, but not the same
   // as holding it.
-  const zoneAdherence = hrSamples > 0 ? (hrOnTarget + hrClose * 0.5) / hrSamples : null;
-  const cadenceAdherence = rpmSamples > 0 ? (rpmOnTarget + rpmClose * 0.5) / rpmSamples : null;
+  const zoneAdherence = hrSeconds > 0 ? (hrOnTarget + hrClose * 0.5) / hrSeconds : null;
+  const cadenceAdherence = rpmSeconds > 0 ? (rpmOnTarget + rpmClose * 0.5) / rpmSeconds : null;
 
   const completion = planDuration > 0
     ? Math.min(1, (summary.durationSeconds || 0) / planDuration)
     : 0;
 
-  const hrCoverage = totalSamples > 0 ? hrSamples / totalSamples : 0;
-  const rpmCoverage = totalSamples > 0 ? rpmSamples / totalSamples : 0;
-  const z5Share = totalSamples > 0 ? z5Seconds / totalSamples : 0;
+  const hrCoverage = totalSeconds > 0 ? hrSeconds / totalSeconds : 0;
+  const rpmCoverage = totalSeconds > 0 ? rpmSeconds / totalSeconds : 0;
+  const z5Share = totalSeconds > 0 ? z5Seconds / totalSeconds : 0;
   // Intensity in whichever model the zones use, so the OVERCOOK_INTENSITY threshold means
   // the same thing as the zone boundaries it is compared against.
   const avgIntensity = summary.avgBPM > 0 ? zoneCalc.intensityOf(summary.avgBPM) : null;
@@ -158,6 +169,8 @@ export function evaluateSession(summary, profile) {
     overcooked,
     hasHR,
     hasCadence,
+    /** Esforço percebido informado no resumo, 0 quando não preenchido. */
+    rpe: summary.rpe || 0,
     calories: summary.calories || 0,
     avgBPM: summary.avgBPM || 0,
     avgRPM: summary.avgRPM || 0,
@@ -173,9 +186,41 @@ export function evaluateSession(summary, profile) {
  * @returns {{action, title, message, reasons: string[], nextPlanId: string|null}}
  */
 export function judge(evaluation, previousEvaluations = []) {
-  const priorQualifying = previousEvaluations.filter(e => e.score >= SCORE_QUALIFY).length;
+  // Mesma régua que getLadderState aplica: uma sessão abandonada na metade não conta como
+  // evidência prévia. Sem o filtro de completion, o veredito prometia subir e a escada na
+  // home dizia que ainda faltava uma sessão — o docstring do módulo afirmava que os dois
+  // concordavam, e não concordavam.
+  const priorQualifying = previousEvaluations
+    .filter(e => e.score >= SCORE_QUALIFY && e.completion >= 0.9).length;
   const nextPlanId = getNextPlanId(evaluation.planId);
   const reasons = buildReasons(evaluation);
+
+  // Sem frequência cardíaca não há como saber se o esforço foi o prescrito.
+  //
+  // O score é renormalizado sobre os sinais disponíveis, então sem cinta e sem sensor de
+  // cadência ele virava `completion × 100` = 100 — acima do limiar de promoção. Dava para
+  // subir os 12 degraus da escada apertando "iniciar" e esperando o tempo passar.
+  if (!evaluation.hasHR) {
+    return {
+      action: 'repeat',
+      title: 'Não dá para avaliar sem frequência cardíaca',
+      message: 'Terminar o tempo não diz se você segurou as zonas pedidas. Conecte a cinta ou o relógio e repita este treino para eu poder liberar o próximo.',
+      reasons,
+      nextPlanId,
+    };
+  }
+
+  // Esforço percebido é o único sinal que contradiz sensores: se você marcou "muito leve",
+  // a sessão não foi o teste que a promoção pressupõe, por melhor que estejam os números.
+  if (evaluation.rpe > 0 && evaluation.rpe <= RPE_TOO_EASY) {
+    return {
+      action: 'repeat',
+      title: 'Leve demais para promover',
+      message: `Você marcou esforço ${evaluation.rpe}/10. Repita segurando um ritmo que exija de você — subir a partir de uma sessão fácil só antecipa a estagnação.`,
+      reasons,
+      nextPlanId,
+    };
+  }
 
   if (evaluation.completion < 0.9) {
     return {
@@ -316,7 +361,12 @@ export function getLadderState(profile) {
   }
 
   const steps = LADDER.map((planId, index) => {
-    const sessions = byPlan.get(planId) || [];
+    const attempts = byPlan.get(planId) || [];
+    // Só sessões com frequência cardíaca contam para limpar o degrau, pelo mesmo motivo
+    // que em judge(): sem cinta o score é completion×100 e qualquer sessão terminada
+    // limparia a escada sem ninguém ter pedalado forte. Elas seguem contando como
+    // tentativa, porque foram.
+    const sessions = attempts.filter(s => s.hasHR);
     const qualifying = sessions.filter(s => s.score >= SCORE_QUALIFY && s.completion >= 0.9);
     const standout = sessions.some(s => s.score >= SCORE_STANDOUT && s.completion >= MIN_COMPLETION);
     const cleared = standout || qualifying.length >= 2;
@@ -326,7 +376,7 @@ export function getLadderState(profile) {
       planId,
       index,
       plan: Plans.getAllPlans().find(p => p.id === planId) || null,
-      attempts: sessions.length,
+      attempts: attempts.length,
       qualifying: qualifying.length,
       bestScore: best,
       cleared,
