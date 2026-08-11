@@ -1,72 +1,147 @@
 /**
- * Parser para CSC Measurement characteristic (0x2A5B).
- * Calcula RPM instantâneo a partir das diferenças entre leituras.
+ * Parser da CSC Measurement characteristic (0x2A5B).
+ *
+ * Layout do perfil Cycling Speed and Cadence:
+ *   byte 0        flags — bit0 dados de roda presentes, bit1 dados de pedivela presentes
+ *   bytes 1-4     Cumulative Wheel Revolutions, uint32 LE   (se bit0)
+ *   bytes 5-6     Last Wheel Event Time, uint16 LE, 1/1024 s (se bit0)
+ *   depois        Cumulative Crank Revolutions, uint16 LE   (se bit1)
+ *                 Last Crank Event Time, uint16 LE, 1/1024 s
+ *
+ * O campo de roda era pulado com um `offset += 6` e a leitura abortava quando não havia
+ * pedivela — ou seja, um sensor só de velocidade ficava totalmente ignorado mesmo
+ * conectado, e não havia velocidade nem distância em lugar nenhum do app (o TCX exportado
+ * saía com 0 km, e o Strava importava a atividade sem distância).
  */
+
+/** Circunferência padrão: 700x23c, o valor que quase todo ciclocomputador assume. */
+export const DEFAULT_WHEEL_MM = 2096;
+
+/** Sem evento novo por este tempo, a roda/pedivela está parada, não silenciosa. */
+const STOPPED_AFTER_MS = 2500;
+
 export class CadenceParser {
-  constructor() {
-    this.lastCrankRevs = null;
-    this.lastCrankTime = null;
-    this.lastReceiveTime = 0;
+  /** @param {number} wheelCircumferenceMm circunferência da roda, em milímetros. */
+  constructor(wheelCircumferenceMm = DEFAULT_WHEEL_MM) {
+    this.wheelMm = wheelCircumferenceMm;
+    this.reset();
+  }
+
+  setWheelCircumference(mm) {
+    if (Number.isFinite(mm) && mm >= 800 && mm <= 3000) this.wheelMm = mm;
   }
 
   parse(dataView) {
+    if (!dataView || dataView.byteLength < 1) return null;
+
     const flags = dataView.getUint8(0);
-    const hasCrank = (flags >> 1) & 0x01;
-    const hasWheel = flags & 0x01;
+    const hasWheel = (flags & 0x01) !== 0;
+    const hasCrank = (flags & 0x02) !== 0;
+    if (!hasWheel && !hasCrank) return null;
 
-    if (!hasCrank) return null;
-
+    const now = Date.now();
+    const result = {};
     let offset = 1;
-    if (hasWheel) {
+
+    if (hasWheel && dataView.byteLength >= offset + 6) {
+      const revs = dataView.getUint32(offset, true);
+      const time = dataView.getUint16(offset + 4, true);
       offset += 6;
+      Object.assign(result, this._wheel(revs, time, now));
     }
 
-    const crankRevs = dataView.getUint16(offset, true);
-    const crankTime = dataView.getUint16(offset + 2, true);
-    const now = Date.now();
+    if (hasCrank && dataView.byteLength >= offset + 4) {
+      const revs = dataView.getUint16(offset, true);
+      const time = dataView.getUint16(offset + 2, true);
+      Object.assign(result, this._crank(revs, time, now));
+    }
 
+    return Object.keys(result).length ? result : null;
+  }
+
+  _crank(revs, time, now) {
     if (this.lastCrankRevs === null) {
-      this.lastCrankRevs = crankRevs;
-      this.lastCrankTime = crankTime;
-      this.lastReceiveTime = now;
+      this.lastCrankRevs = revs;
+      this.lastCrankTime = time;
+      this.lastCrankAt = now;
       return { rpm: 0 };
     }
 
-    let deltaRevs = crankRevs - this.lastCrankRevs;
-    if (deltaRevs < 0) deltaRevs += 65536;
+    const deltaRevs = wrap16(revs - this.lastCrankRevs);
+    const deltaTime = wrap16(time - this.lastCrankTime);
 
-    let deltaTime = crankTime - this.lastCrankTime;
-    if (deltaTime < 0) deltaTime += 65536;
-
-    // Se o evento do pedivela não mudou (mesmas revoluções/tempo)
     if (deltaTime === 0 || deltaRevs === 0) {
-      // Se passou muito tempo (ex: 2.5s) sem um novo crank interval,
-      // assumimos que a pessoa realmente parou de pedalar (RPM = 0).
-      if (now - this.lastReceiveTime > 2500) {
-        return { rpm: 0 };
-      }
-      // Senão, é só o sensor transmitindo em alta frequência
-      // antes da volta completar. Retornamos null para a UI ignorar
-      // este pacote e manter o valor atual no painel.
-      return null;
+      // O sensor notifica mais rápido do que a volta completa. Só depois de um tempo sem
+      // evento novo é que a pessoa realmente parou de pedalar.
+      return now - this.lastCrankAt > STOPPED_AFTER_MS ? { rpm: 0 } : {};
     }
 
-    this.lastCrankRevs = crankRevs;
-    this.lastCrankTime = crankTime;
-    this.lastReceiveTime = now;
+    this.lastCrankRevs = revs;
+    this.lastCrankTime = time;
+    this.lastCrankAt = now;
 
-    const deltaSeconds = deltaTime / 1024;
-    const rpm = Math.round((deltaRevs / deltaSeconds) * 60);
+    const rpm = Math.round((deltaRevs / (deltaTime / 1024)) * 60);
+    // Descarta lixo de overflow temporário.
+    return rpm >= 0 && rpm <= 200 ? { rpm } : {};
+  }
 
-    // Ignora valores absurdos (overflow lixo temporário)
-    if (rpm > 200 || rpm < 0) return null;
+  _wheel(revs, time, now) {
+    if (this.lastWheelRevs === null) {
+      this.lastWheelRevs = revs;
+      this.lastWheelTime = time;
+      this.lastWheelAt = now;
+      this.firstWheelRevs = revs;
+      return { speedKmh: 0, distanceM: 0 };
+    }
 
-    return { rpm };
+    // Revoluções acumuladas são uint32: o rollover leva anos de pedalada, mas o contador
+    // também zera quando o sensor reinicia. Nesse caso reancoramos, senão a distância
+    // daria um salto negativo.
+    if (revs < this.lastWheelRevs) {
+      this.lastWheelRevs = revs;
+      this.firstWheelRevs = revs - this.totalWheelRevs;
+    }
+
+    const deltaRevs = revs - this.lastWheelRevs;
+    const deltaTime = wrap16(time - this.lastWheelTime);
+
+    if (deltaTime === 0 || deltaRevs === 0) {
+      if (now - this.lastWheelAt > STOPPED_AFTER_MS) {
+        return { speedKmh: 0, distanceM: this.distanceM };
+      }
+      return {};
+    }
+
+    this.lastWheelRevs = revs;
+    this.lastWheelTime = time;
+    this.lastWheelAt = now;
+    this.totalWheelRevs = revs - this.firstWheelRevs;
+
+    const metres = (deltaRevs * this.wheelMm) / 1000;
+    const speedKmh = Math.round((metres / (deltaTime / 1024)) * 3.6 * 10) / 10;
+    this.distanceM = Math.round((this.totalWheelRevs * this.wheelMm) / 1000);
+
+    // 120 km/h numa bike de spinning é lixo de sensor, não pedalada.
+    if (speedKmh < 0 || speedKmh > 120) return { distanceM: this.distanceM };
+
+    return { speedKmh, distanceM: this.distanceM };
   }
 
   reset() {
     this.lastCrankRevs = null;
     this.lastCrankTime = null;
-    this.lastReceiveTime = 0;
+    this.lastCrankAt = 0;
+
+    this.lastWheelRevs = null;
+    this.lastWheelTime = null;
+    this.lastWheelAt = 0;
+    this.firstWheelRevs = 0;
+    this.totalWheelRevs = 0;
+    this.distanceM = 0;
   }
+}
+
+/** Diferença de contador uint16, tratando o rollover. */
+function wrap16(delta) {
+  return delta < 0 ? delta + 65536 : delta;
 }

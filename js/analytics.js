@@ -2,6 +2,17 @@ import * as Storage from './storage.js';
 import * as Plans from './training-plans.js';
 import { zoneCalcFromSummary } from './zone-calculator.js';
 
+/**
+ * Treinos que contam como treino de verdade.
+ *
+ * Sessões do modo demo são geradas pelo simulador e entravam no histórico
+ * indistinguíveis das reais — inflando recordes, tendência de condicionamento e a escada
+ * de progressão. Elas seguem visíveis no histórico, com selo; só não contam para número.
+ */
+function realWorkouts() {
+  return Storage.getWorkouts().filter(w => !w.demo);
+}
+
 /** Midnight local time, so a ride at 23:50 belongs to the day it felt like. */
 function startOfDay(date) {
   const d = new Date(date);
@@ -29,7 +40,7 @@ function periodStart(period, now) {
  * @param {string} period - 'week', 'month', 'year', 'all'
  */
 export function getStats(period = 'month') {
-  const allWorkouts = Storage.getWorkouts();
+  const allWorkouts = realWorkouts();
   const now = new Date();
   
   // Calendar boundaries, not rolling windows.
@@ -88,7 +99,7 @@ export function getStats(period = 'month') {
  * streak would punish the rest days the training plans themselves prescribe.
  */
 export function getGoalProgress(weeklyGoal) {
-  const workouts = Storage.getWorkouts();
+  const workouts = realWorkouts();
   const thisWeek = startOfWeek();
   const done = workouts.filter(w => new Date(w.date) >= thisWeek).length;
 
@@ -118,7 +129,7 @@ export function getGoalProgress(weeklyGoal) {
 
 /** Personal bests. Returns null for records no ride has set yet. */
 export function getRecords() {
-  const workouts = Storage.getWorkouts();
+  const workouts = realWorkouts();
   if (workouts.length === 0) return null;
 
   const best = (pick) => workouts.reduce((a, b) => (pick(b) > pick(a) ? b : a));
@@ -147,7 +158,7 @@ export function getRecords() {
  * @returns {null|{planId, planName, points: Array<{date, avgBPM, intensity}>, deltaBPM}}
  */
 export function getFitnessTrend() {
-  const workouts = Storage.getWorkouts().filter(w => w.planId && w.avgBPM > 0);
+  const workouts = realWorkouts().filter(w => w.planId && w.avgBPM > 0);
   if (workouts.length < 2) return null;
 
   const byPlan = new Map();
@@ -181,6 +192,60 @@ export function getFitnessTrend() {
     points,
     // Negative is the good direction: same work, lower heart rate.
     deltaBPM: points[points.length - 1].avgBPM - points[0].avgBPM,
+  };
+}
+
+/**
+ * Carga de treino pelo método sRPE: duração em minutos × esforço percebido.
+ *
+ * É a métrica clássica de diário de treino e o app já tinha os dois ingredientes gravados
+ * sem usar nenhum deles. Ela responde o que nem FC nem calorias respondem: quanto o treino
+ * custou a VOCÊ. Uma sessão de 60 min a RPE 4 (240) e uma de 30 min a RPE 8 (240) cobram
+ * o mesmo, e é isso que se acumula ao longo da semana.
+ *
+ * A razão aguda:crônica compara a última semana com a média das quatro anteriores. Acima
+ * de ~1.5 é um salto de volume — o padrão associado a lesão por excesso de carga. Só faz
+ * sentido com histórico suficiente, por isso devolve null quando não há.
+ */
+export function getTrainingLoad() {
+  const workouts = realWorkouts().filter(w => w.rpe > 0);
+  if (workouts.length === 0) return null;
+
+  const load = (w) => Math.round((w.durationSeconds / 60) * w.rpe);
+  const thisWeek = startOfWeek();
+
+  const weekLoad = (weeksBack) => {
+    const start = new Date(thisWeek);
+    start.setDate(start.getDate() - 7 * weeksBack);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return workouts
+      .filter(w => { const d = new Date(w.date); return d >= start && d < end; })
+      .reduce((sum, w) => sum + load(w), 0);
+  };
+
+  const acute = weekLoad(0);
+  const previous = [1, 2, 3, 4].map(weekLoad);
+  // Só conta como base as semanas em que houve treino: quem voltou de férias teria uma
+  // média artificialmente baixa e qualquer sessão pareceria um salto perigoso.
+  const active = previous.filter(v => v > 0);
+  const chronic = active.length >= 2
+    ? Math.round(active.reduce((a, b) => a + b, 0) / active.length)
+    : null;
+
+  const sessions = workouts
+    .slice()
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .slice(0, 10)
+    .map(w => ({ date: w.date, load: load(w), rpe: w.rpe, minutes: Math.round(w.durationSeconds / 60) }));
+
+  return {
+    acute,
+    chronic,
+    ratio: chronic ? Math.round((acute / chronic) * 100) / 100 : null,
+    sessions,
+    /** Quantos treinos ainda estão sem RPE — a razão de a carga poder subestimar. */
+    missingRpe: realWorkouts().filter(w => !w.rpe).length,
   };
 }
 

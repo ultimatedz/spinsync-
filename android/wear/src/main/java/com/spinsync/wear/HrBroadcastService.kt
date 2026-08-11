@@ -77,6 +77,16 @@ class HrBroadcastService : LifecycleService() {
 
         /** A nag every 25s would be noise, not information. */
         private const val ZONE_ALERT_COOLDOWN_MS = 60_000L
+
+        /**
+         * Sem pacote de treino por este tempo, os números da tela param de valer.
+         *
+         * O celular escreve a cada segundo. Se o app dele for morto no meio do treino, a
+         * conexão GATT pode continuar de pé — então não basta olhar o número de assinantes:
+         * o relógio ficava exibindo cronômetro, calorias e "Sobe em 0:12" congelados
+         * indefinidamente. 15 s cobrem uma pausa de GC ou uma reconexão sem falso positivo.
+         */
+        private const val WORKOUT_STALE_MS = 15_000L
     }
 
     private lateinit var gatt: HrGattServer
@@ -98,6 +108,7 @@ class HrBroadcastService : LifecycleService() {
     private var fakeWorkoutStartedAt = 0L
     private var zoneDriftSince = 0L
     private var lastZoneAlertAt = 0L
+    @Volatile private var lastWorkoutPacketAt = 0L
 
     private var lastNotifAt = 0L
     private var lastDiagAt = 0L
@@ -155,7 +166,10 @@ class HrBroadcastService : LifecycleService() {
         lifecycleScope.launch {
             if (!source.isSupported()) {
                 Log.e(LOG_TAG, "HEART_RATE_BPM not supported by this watch")
-                HrState.update { it.copy(status = BroadcastStatus.ERROR_NO_SENSOR) }
+                // Sem derrubar o serviço, o foreground service, o wakelock de 4 h, o
+                // publishLoop e o advertising ficavam de pé para sempre gastando bateria
+                // num estado que nunca vai melhorar.
+                fatal(BroadcastStatus.ERROR_NO_SENSOR)
                 return@launch
             }
             runCatching { source.start(::onHrEvent) }
@@ -180,6 +194,18 @@ class HrBroadcastService : LifecycleService() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         HrState.reset()
         requestTileUpdate(this)
+    }
+
+    /**
+     * Erro do qual não há recuperação: mostra o motivo e desmonta tudo.
+     *
+     * O estado fica visível porque stopBroadcasting() reseta o HrState e nós o
+     * reescrevemos depois — sem isso a tela voltaria para "Parado" sem explicar nada.
+     */
+    private fun fatal(status: BroadcastStatus, detail: String? = null) {
+        stopBroadcasting()
+        HrState.update { it.copy(status = status, detail = detail) }
+        stopSelf()
     }
 
     // ── Sampling and publishing ──────────────────────────────────────────────
@@ -241,6 +267,21 @@ class HrBroadcastService : LifecycleService() {
         }
     }
 
+    /**
+     * Limpa os números do treino quando o celular para de mandá-los.
+     *
+     * O modo fake produz os pacotes localmente, então não tem por que expirá-los.
+     */
+    private fun expireStaleWorkout(now: Long) {
+        if (USE_FAKE_HEART_RATE) return
+        if (lastWorkoutPacketAt == 0L) return
+        if (now - lastWorkoutPacketAt < WORKOUT_STALE_MS) return
+
+        Log.w(LOG_TAG, "sem pacote de treino há ${now - lastWorkoutPacketAt}ms — limpando a tela")
+        lastWorkoutPacketAt = 0L
+        HrState.update { it.copy(workout = WorkoutStatus()) }
+    }
+
     /** Restarts the debounce clock only on an actual transition, never on a repeat. */
     private fun setSensorState(state: SensorState) {
         if (sensorState == state) return
@@ -272,6 +313,7 @@ class HrBroadcastService : LifecycleService() {
 
         lastPublishAt = now
         gatt.publish(bpm, contact)
+        expireStaleWorkout(now)
         updateUiState(bpm, contact, degraded)
         if (USE_FAKE_HEART_RATE) publishFakeWorkout(now)
         maybeUpdateNotification(bpm)
@@ -306,14 +348,18 @@ class HrBroadcastService : LifecycleService() {
 
     private fun updateUiState(bpm: Int, contact: Boolean, degraded: Boolean) {
         HrState.update { current ->
+            // Problema de sensor vem ANTES de "aguardando o celular": o estado do sensor não
+            // depende de haver central conectado, e a ordem anterior escondia todo o trabalho
+            // de debounce até o celular assinar — tirar o relógio do pulso antes de parear
+            // mostrava "Aguardando o celular…".
             val status = when {
                 current.status.isError() -> current.status
-                contact && current.subscribers > 0 -> BroadcastStatus.CONNECTED
-                contact -> BroadcastStatus.ADVERTISING
-                // Before the phone connects, "waiting for the phone" is the actionable message.
-                current.subscribers == 0 -> BroadcastStatus.ADVERTISING
                 sensorState == SensorState.OFF_BODY && degraded -> BroadcastStatus.NO_CONTACT
                 sessionTakenOver -> BroadcastStatus.SESSION_TAKEN_OVER
+                contact && current.subscribers > 0 -> BroadcastStatus.CONNECTED
+                contact -> BroadcastStatus.ADVERTISING
+                // Sem contato e sem celular: o que o usuário pode fazer é conectar o celular.
+                current.subscribers == 0 -> BroadcastStatus.ADVERTISING
                 else -> BroadcastStatus.ACQUIRING
             }
             current.copy(status = status, bpm = bpm)
@@ -328,12 +374,18 @@ class HrBroadcastService : LifecycleService() {
                 }
 
             is HrGattServer.GattEvent.SubscribersChanged ->
-                HrState.update { it.copy(subscribers = event.count) }
+                HrState.update {
+                    // Sem central não há quem envie estado de treino: manter os últimos
+                    // números na tela deixava cronômetro e calorias congelados para sempre.
+                    if (event.count == 0) it.copy(subscribers = 0, workout = WorkoutStatus())
+                    else it.copy(subscribers = event.count)
+                }
 
             is HrGattServer.GattEvent.HapticRequested ->
                 HapticPatterns.play(this, event.patternId)
 
             is HrGattServer.GattEvent.WorkoutUpdated -> {
+                lastWorkoutPacketAt = System.currentTimeMillis()
                 HrState.update { it.copy(workout = event.status) }
                 checkZoneDrift(event.status)
             }

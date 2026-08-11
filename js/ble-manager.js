@@ -97,10 +97,15 @@ function classifyError(err) {
 export class BLENativeManager extends EventTarget {
   constructor() {
     super();
-    this.cadenceParser = new CadenceParser();
+    // Circunferência do perfil: sem ela a distância sairia sempre em 700x23c.
+    this.cadenceParser = new CadenceParser(Storage.getSettings().wheelCircumferenceMm);
     this._ble = null;
     this._initialized = false;
+    // Capacidades do periférico atual. A de treino nunca era inicializada nem resetada:
+    // bastava conectar uma vez numa cinta comum para o espelhamento do relógio ficar
+    // desligado até recarregar a página, mesmo trocando de sensor depois.
     this._hapticUnsupported = false;
+    this._workoutUnsupported = false;
 
     this._channels = {
       hr: this._newChannel('hr', HR_SERVICE, HR_MEASUREMENT, 'HR Monitor'),
@@ -274,8 +279,11 @@ export class BLENativeManager extends EventTarget {
     ch.deviceId = null;
     ch.deviceName = null;
     if (kind === 'csc') this.cadenceParser.reset();
-    // The next sensor may well support haptics even if this one didn't.
-    if (kind === 'hr') this._hapticUnsupported = false;
+    // O próximo sensor pode suportar o que este não suportava.
+    if (kind === 'hr') {
+      this._hapticUnsupported = false;
+      this._workoutUnsupported = false;
+    }
 
     // An explicit disconnect means "forget this sensor" — otherwise the user could
     // never switch to a different one.
@@ -451,13 +459,15 @@ export class BLEManager extends EventTarget {
     this.cscServer = null;
     this.hrCharacteristic = null;
     this.cscCharacteristic = null;
-    this.cadenceParser = new CadenceParser();
+    // Circunferência do perfil: sem ela a distância sairia sempre em 700x23c.
+    this.cadenceParser = new CadenceParser(Storage.getSettings().wheelCircumferenceMm);
     this._hrConnected = false;
     this._cscConnected = false;
     this._hrAutoReconnect = false;
     this._hrReconnectTimer = null;
     this._hrReconnectAttempt = 0;
     this._hapticUnsupported = false;
+    this._workoutUnsupported = false;
   }
 
   get hrConnected() { return this._hrConnected; }

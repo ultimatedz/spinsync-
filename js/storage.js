@@ -150,6 +150,8 @@ const DEFAULT_SETTINGS = {
   autoPause: true,
   /** Sessões por semana. 0 desliga a meta. */
   weeklyGoal: 3,
+  /** Circunferência da roda em mm, para velocidade e distância. 2096 = 700x23c. */
+  wheelCircumferenceMm: 2096,
 };
 
 export function getSettings() {
@@ -166,11 +168,14 @@ export function saveSettings(patch) {
 
 export function exportAll() {
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     profile: getProfile(),
     workouts: getWorkouts(),
-    customPlans: readJSON('spinsync_custom_plans', [])
+    customPlans: readJSON('spinsync_custom_plans', []),
+    // v2: sem isto, apagar os dados e restaurar o backup perdia meta semanal, vibração,
+    // auto-pausa — tudo que clearAll também remove.
+    settings: getSettings()
   };
 }
 
@@ -178,15 +183,45 @@ export function exportAll() {
  * Merges a backup into the current data, keyed by workout id and plan id.
  * @returns {{workouts: number, plans: number}} how many new entries were added
  */
+/**
+ * Normaliza um treino vindo de backup para a forma que o app assume em toda parte.
+ *
+ * O import aceitava qualquer objeto com `id`, então um arquivo de outra origem — ou de uma
+ * versão antiga — entrava no histórico e só quebrava depois, ao abrir o resumo. Preencher
+ * os campos ausentes aqui é mais barato do que espalhar guardas por todas as telas.
+ *
+ * @returns {null|object} null quando o objeto não é reconhecível como treino.
+ */
+function normalizeWorkout(w) {
+  if (!w || typeof w !== 'object' || !w.id) return null;
+  const date = new Date(w.date);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return {
+    ...w,
+    durationSeconds: Number(w.durationSeconds) || 0,
+    calories: Number(w.calories) || 0,
+    avgBPM: Number(w.avgBPM) || 0,
+    maxBPM: Number(w.maxBPM) || 0,
+    avgRPM: Number(w.avgRPM) || 0,
+    maxRPM: Number(w.maxRPM) || 0,
+    zoneTime: (w.zoneTime && typeof w.zoneTime === 'object') ? w.zoneTime : {},
+    dataPoints: Array.isArray(w.dataPoints) ? w.dataPoints : [],
+    laps: Array.isArray(w.laps) ? w.laps : [],
+  };
+}
+
 export function importAll(payload) {
   if (!payload || typeof payload !== 'object') throw new Error('Arquivo inválido');
 
-  let addedWorkouts = 0;
+  let addedWorkouts = 0, skipped = 0;
   if (Array.isArray(payload.workouts)) {
     const existing = getWorkouts();
     const ids = new Set(existing.map(w => w.id));
-    for (const w of payload.workouts) {
-      if (w && w.id && !ids.has(w.id)) {
+    for (const raw of payload.workouts) {
+      const w = normalizeWorkout(raw);
+      if (!w) { skipped++; continue; }
+      if (!ids.has(w.id)) {
         existing.push(w);
         ids.add(w.id);
         addedWorkouts++;
@@ -212,7 +247,11 @@ export function importAll(payload) {
 
   if (payload.profile && !getProfile()) saveProfile(payload.profile);
 
-  return { workouts: addedWorkouts, plans: addedPlans };
+  // Preferências e sensores pareados também são apagados por clearAll, então um
+  // reset seguido de restauração perdia meta semanal, vibração e auto-pausa.
+  if (payload.settings && typeof payload.settings === 'object') saveSettings(payload.settings);
+
+  return { workouts: addedWorkouts, plans: addedPlans, skipped };
 }
 
 export function clearAll() {

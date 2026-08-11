@@ -32,13 +32,30 @@ function trackpoints(points, startMs) {
       ? `\n        <HeartRateBpm><Value>${Math.round(p.bpm)}</Value></HeartRateBpm>`
       : '';
     const cadence = p.rpm > 0 ? `\n        <Cadence>${Math.min(254, Math.round(p.rpm))}</Cadence>` : '';
+    // Distância acumulada por ponto: sem ela o Strava desenha a atividade sem perfil de
+    // distância, mesmo que o total da lap esteja preenchido.
+    const distance = p.distanceM > 0
+      ? `\n        <DistanceMeters>${Math.round(p.distanceM)}</DistanceMeters>`
+      : '';
     return `      <Trackpoint>
-        <Time>${time}</Time>${hr}${cadence}
+        <Time>${time}</Time>${distance}${hr}${cadence}
       </Trackpoint>`;
   }).join('\n');
 }
 
-function lapXml({ startMs, offsetMs, durationSeconds, calories, avgBPM, maxBPM, points }) {
+/** Distância percorrida num trecho: a acumulada é do treino inteiro, não da volta. */
+function lapDistance(points) {
+  if (!points.length) return 0;
+  const first = points[0].distanceM || 0;
+  const last = points[points.length - 1].distanceM || 0;
+  return Math.max(0, last - first);
+}
+
+function lapPoints(points, lap) {
+  return points.filter(p => p.timestamp >= lap.startMs && p.timestamp < lap.endMs);
+}
+
+function lapXml({ startMs, offsetMs, durationSeconds, calories, avgBPM, maxBPM, points, distanceM }) {
   const avg = avgBPM > 0
     ? `\n      <AverageHeartRateBpm><Value>${Math.round(avgBPM)}</Value></AverageHeartRateBpm>`
     : '';
@@ -48,7 +65,7 @@ function lapXml({ startMs, offsetMs, durationSeconds, calories, avgBPM, maxBPM, 
 
   return `    <Lap StartTime="${new Date(startMs + offsetMs).toISOString()}">
       <TotalTimeSeconds>${durationSeconds}</TotalTimeSeconds>
-      <DistanceMeters>0</DistanceMeters>
+      <DistanceMeters>${Math.round(distanceM || 0)}</DistanceMeters>
       <Calories>${Math.round(calories || 0)}</Calories>${avg}${max}
       <Intensity>Active</Intensity>
       <TriggerMethod>Manual</TriggerMethod>
@@ -77,7 +94,8 @@ export function buildTCX(summary) {
       calories: lap.calories,
       avgBPM: lap.avgBPM,
       maxBPM: lap.maxBPM,
-      points: points.filter(p => p.timestamp >= lap.startMs && p.timestamp < lap.endMs),
+      points: lapPoints(points, lap),
+      distanceM: lapDistance(lapPoints(points, lap)),
     }))
     : [lapXml({
       startMs,
@@ -87,10 +105,18 @@ export function buildTCX(summary) {
       avgBPM: summary.avgBPM,
       maxBPM: summary.maxBPM,
       points,
+      distanceM: summary.distanceM || lapDistance(points),
     })];
 
-  const notes = summary.note || summary.planName
-    ? `\n    <Notes>${xmlEscape([summary.planName, summary.note].filter(Boolean).join(' — '))}</Notes>`
+  // O RPE também vai aqui: é o único dado do treino que nenhum sensor mede, e sem isto
+  // ele ficava preso no app — o TCX é justamente o formato que outros apps leem.
+  const noteParts = [
+    summary.planName,
+    summary.rpe ? `Esforço percebido ${summary.rpe}/10` : null,
+    summary.note,
+  ].filter(Boolean);
+  const notes = noteParts.length
+    ? `\n    <Notes>${xmlEscape(noteParts.join(' — '))}</Notes>`
     : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>

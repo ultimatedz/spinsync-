@@ -71,6 +71,11 @@ export class WorkoutRecorder {
     this.lastBpmAt = 0;
     this.lastRpmAt = 0;
 
+    // Roda: distância vem acumulada do sensor, velocidade é instantânea.
+    this.currentSpeed = 0;
+    this.speedMax = 0;
+    this.distanceM = 0;
+
     // Laps. Closed on demand; the segment still running is not in here.
     this.laps = [];
     this.lapStartMs = 0;
@@ -116,6 +121,20 @@ export class WorkoutRecorder {
   updateRPM(rpm) {
     this.currentRPM = rpm;
     this.lastRpmAt = Date.now();
+  }
+
+  /**
+   * Velocidade e distância do sensor de roda.
+   *
+   * A distância vem acumulada do parser (contador do próprio sensor), então é atribuída e
+   * não somada — assim uma amostra perdida não some do total.
+   */
+  updateWheel({ speedKmh, distanceM }) {
+    if (Number.isFinite(speedKmh)) {
+      this.currentSpeed = speedKmh;
+      if (speedKmh > this.speedMax) this.speedMax = speedKmh;
+    }
+    if (Number.isFinite(distanceM)) this.distanceM = distanceM;
   }
 
   /**
@@ -171,6 +190,8 @@ export class WorkoutRecorder {
       rpm,
       zoneId,
       calories: Math.round(this.totalCalories),
+      speedKmh: this.currentSpeed || 0,
+      distanceM: this.distanceM || 0,
       // Quanto tempo esta amostra representa. Consumidores antigos ignoram; quem pondera
       // usa `dp.dtMs || 1000`, que é exatamente o certo para dados gravados antes disto.
       dtMs: Math.round(rawDt),
@@ -180,6 +201,19 @@ export class WorkoutRecorder {
     this.lastTickTime = now;
 
     return dataPoint;
+  }
+
+  /**
+   * Velocidade média = distância / tempo em movimento.
+   *
+   * Deliberadamente não é a média das leituras instantâneas: aquela conta cada amostra
+   * igual, então uma parada longa com o sensor mudo puxaria a média para baixo de um jeito
+   * que não corresponde a nada.
+   */
+  getAvgSpeed() {
+    const seconds = this.getElapsedSeconds();
+    if (!seconds || !this.distanceM) return 0;
+    return Math.round((this.distanceM / 1000) / (seconds / 3600) * 10) / 10;
   }
 
   /** Tempo em zona em segundos — a forma que todo o resto do app consome. */
@@ -277,6 +311,8 @@ export class WorkoutRecorder {
       rpmMax: this.rpmMax,
       zoneTimeMs: { ...this.zoneTimeMs },
       unclassifiedMs: this.unclassifiedMs,
+      distanceM: this.distanceM,
+      speedMax: this.speedMax,
       lastBpmAt: this.lastBpmAt,
       lastRpmAt: this.lastRpmAt,
       laps: this.laps,
@@ -310,6 +346,8 @@ export class WorkoutRecorder {
     this.zoneTimeMs = state.zoneTimeMs
       || Object.fromEntries(Object.entries(state.zoneTime || {}).map(([k, v]) => [k, v * 1000]));
     this.unclassifiedMs = state.unclassifiedMs || 0;
+    this.distanceM = state.distanceM || 0;
+    this.speedMax = state.speedMax || 0;
     this.lastBpmAt = state.lastBpmAt || 0;
     this.lastRpmAt = state.lastRpmAt || 0;
     this.laps = state.laps || [];
@@ -353,6 +391,9 @@ export class WorkoutRecorder {
       // sum(zoneTime) + unclassifiedSeconds === durationSeconds, que sem isto não fechava e
       // não havia como distinguir falta de sinal de erro de contagem.
       unclassifiedSeconds: Math.round(this.unclassifiedMs / 1000),
+      distanceM: Math.round(this.distanceM),
+      avgSpeedKmh: this.getAvgSpeed(),
+      maxSpeedKmh: Math.round(this.speedMax * 10) / 10,
       laps: this.laps.slice(),
       dataPoints: this.dataPoints,
       profile: { ...this.profile },

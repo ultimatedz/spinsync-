@@ -335,7 +335,7 @@ export function getNextPlanId(planId) {
 
 /** All evaluated sessions for a plan, newest first. */
 export function getSessionsFor(planId, profile) {
-  return Storage.getWorkouts()
+  return Storage.getWorkouts().filter(w => !w.demo)
     .filter(w => w.planId === planId)
     .map(w => evaluateSession(w, profile))
     .filter(Boolean);
@@ -349,7 +349,8 @@ export function getSessionsFor(planId, profile) {
  * never disagree.
  */
 export function getLadderState(profile) {
-  const workouts = Storage.getWorkouts();
+  // Sessões do simulador não podem limpar degrau.
+  const workouts = Storage.getWorkouts().filter(w => !w.demo);
   const byPlan = new Map();
 
   for (const w of workouts) {

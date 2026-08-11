@@ -2105,6 +2105,75 @@ body {
   margin-bottom: 4px;
 }
 
+/* ── Carga de treino ── */
+.load-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  text-align: center;
+}
+
+.load-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.load-value.warn { color: var(--zone-3); }
+.load-value.danger { color: var(--zone-4); }
+
+.load-label {
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  margin-top: 3px;
+}
+
+/* RPE e nota na linha do histórico — antes você escrevia e nunca mais via. */
+.history-rpe {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+/* ── Modo demo ── */
+.demo-banner {
+  padding: 7px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(124, 77, 255, 0.14);
+  border: 1px solid rgba(124, 77, 255, 0.3);
+  color: var(--accent-purple-text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.setting-divider {
+  border: 0;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+/* Selo na linha do histórico: o treino continua visível, mas não se confunde com um real. */
+.history-demo-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(124, 77, 255, 0.2);
+  color: var(--accent-purple-text);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
 /* ── Laps ── */
 .btn-lap {
   background: var(--bg-elevated);

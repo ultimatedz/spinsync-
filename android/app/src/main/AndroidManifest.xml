@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Mantém o treino gravando com a tela apagada ou o app em segundo plano. Sem isto o
+         app dependia só de navigator.wakeLock, que a WebView libera nesses dois casos. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- O tipo honesto: o serviço existe para manter vivo o link BLE com a cinta e o
+         sensor de cadência. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Reserva para treino sem sensor algum, onde BLUETOOTH_CONNECT pode não estar
+         concedida e connectedDevice lançaria SecurityException. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -23,6 +35,13 @@
             </intent-filter>
 
         </activity>
+
+        <!-- Tipo escolhido em runtime (ver WorkoutForegroundService.resolveType): ambos são
+             declarados aqui porque o sistema exige que o tipo usado esteja no manifest. -->
+        <service
+            android:name=".WorkoutForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

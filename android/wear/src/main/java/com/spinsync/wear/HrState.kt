@@ -39,8 +39,29 @@ data class HrUiState(
     /** Pushed by the phone over the vendor service; all zeros until a workout starts. */
     val workout: WorkoutStatus = WorkoutStatus(),
 ) {
+    /**
+     * Só os estados em que o serviço está realmente de pé.
+     *
+     * Era `status != IDLE`, o que incluía os estados de erro. Com a permissão de sensores
+     * negada, ERROR_PERMISSION fazia isto virar `true`, o botão pintava "Parar", o clique
+     * ia para stopBroadcast(), o serviço nunca tinha iniciado e saía antes do reset — e o
+     * usuário não conseguia mais começar sem matar o app.
+     */
     val isRunning: Boolean
-        get() = status != BroadcastStatus.IDLE
+        get() = when (status) {
+            BroadcastStatus.STARTING,
+            BroadcastStatus.ADVERTISING,
+            BroadcastStatus.CONNECTED,
+            BroadcastStatus.ACQUIRING,
+            BroadcastStatus.NO_CONTACT,
+            BroadcastStatus.SESSION_TAKEN_OVER -> true
+
+            BroadcastStatus.IDLE,
+            BroadcastStatus.ERROR_PERMISSION,
+            BroadcastStatus.ERROR_NO_SENSOR,
+            BroadcastStatus.ERROR_NO_PERIPHERAL,
+            BroadcastStatus.ERROR_BT_OFF -> false
+        }
 }
 
 object HrState {

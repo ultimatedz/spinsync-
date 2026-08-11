@@ -226,6 +226,37 @@
           <input type="number" id="setting-goal" class="form-input setting-number"
                  inputmode="numeric" min="0" max="14" value="3">
         </div>
+
+        <div class="setting-row mt-16">
+          <div class="setting-info">
+            <label class="setting-name" for="setting-wheel">Circunferência da roda (mm)</label>
+            <div class="setting-desc">
+              Usada para velocidade e distância, se o seu sensor transmitir dados de roda.
+              2096 = 700x23c.
+            </div>
+          </div>
+          <input type="number" id="setting-wheel" class="form-input setting-number"
+                 inputmode="numeric" min="800" max="3000" value="2096">
+        </div>
+
+        <!-- Ferramenta de desenvolvimento, não preferência de treino: fica separada, no fim,
+             e fora da home — lá ocupava o lugar mais nobre do app e era fácil de ligar sem
+             querer. -->
+        <hr class="setting-divider">
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-name">Modo demo</div>
+            <div class="setting-desc">
+              Gera BPM e cadência fictícios, sem sensor nenhum. Os treinos gravados assim
+              ficam marcados e não contam para recordes nem para a progressão.
+            </div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="demo-toggle">
+            <span class="toggle-slider"></span>
+            <span class="sr-only">Modo demo</span>
+          </label>
+        </div>
       </div>
 
       <!-- Health Connect. requestAuth() used to run only inside syncWorkout(), so the
@@ -299,11 +330,10 @@
         <button class="btn btn-primary btn-full btn-sm mt-8" id="btn-coach-open">Ver o treino</button>
       </div>
 
-      <!-- Demo Toggle -->
-      <button type="button" id="demo-toggle" class="demo-toggle" aria-pressed="false">
-        <span aria-hidden="true">🧪</span>
-        <span class="demo-label">Modo Demo</span>
-      </button>
+      <!-- Aviso persistente, para não gravar uma sessão inteira achando que é real. -->
+      <div class="demo-banner" id="demo-banner" hidden>
+        <span aria-hidden="true">🧪</span> Modo demo — os dados são fictícios
+      </div>
 
       <!-- Sensor Cards -->
       <div class="card-title" style="padding: 0 4px; margin-bottom: 10px;">SENSORES</div>
@@ -360,6 +390,9 @@
     <!-- VIEW: WORKOUT DASHBOARD                  -->
     <!-- ════════════════════════════════════════ -->
     <div id="view-workout" class="view workout-view">
+      <div class="demo-banner" hidden>
+        <span aria-hidden="true">🧪</span> Modo demo — os dados são fictícios
+      </div>
       <!-- Timer -->
       <div class="workout-timer" id="workout-timer">00:00:00</div>
 
@@ -394,6 +427,16 @@
           <div class="metric-card">
             <div class="metric-value cal" id="workout-calories">0</div>
             <div class="metric-label">Calorias (kcal)</div>
+          </div>
+          <!-- Só aparece com sensor de roda: numa bike sem ele estes números seriam zeros
+               permanentes ocupando espaço. -->
+          <div class="metric-card" id="workout-speed-card" hidden>
+            <div class="metric-value" style="color:var(--zone-1)" id="workout-speed">--</div>
+            <div class="metric-label">km/h</div>
+          </div>
+          <div class="metric-card" id="workout-distance-card" hidden>
+            <div class="metric-value" style="color:var(--zone-1)" id="workout-distance">0.0</div>
+            <div class="metric-label">Distância (km)</div>
           </div>
         </div>
 
@@ -518,6 +561,14 @@
         <div class="stat-card">
           <div class="stat-value cadence" id="stat-max-rpm">--</div>
           <div class="stat-label">Cadência Máxima</div>
+        </div>
+        <div class="stat-card" id="stat-distance-card" hidden>
+          <div class="stat-value" style="color:var(--zone-1)" id="stat-distance">--</div>
+          <div class="stat-label">Distância (km)</div>
+        </div>
+        <div class="stat-card" id="stat-speed-card" hidden>
+          <div class="stat-value" style="color:var(--zone-1)" id="stat-avg-speed">--</div>
+          <div class="stat-label">Velocidade Média</div>
         </div>
       </div>
 
@@ -816,6 +867,27 @@
         <div class="chart-container">
           <canvas id="chart-fitness" role="img" aria-label="Frequência cardíaca média no mesmo treino ao longo do tempo"></canvas>
         </div>
+      </div>
+
+      <!-- Carga de treino (sRPE). Responde o que FC e calorias não respondem: quanto o
+           treino custou a você. -->
+      <div class="card mt-16" id="load-card" hidden>
+        <div class="card-title">Carga de Treino</div>
+        <div class="load-row">
+          <div class="load-stat">
+            <div class="load-value" id="load-acute">0</div>
+            <div class="load-label">esta semana</div>
+          </div>
+          <div class="load-stat">
+            <div class="load-value" id="load-chronic">--</div>
+            <div class="load-label">média 4 semanas</div>
+          </div>
+          <div class="load-stat">
+            <div class="load-value" id="load-ratio">--</div>
+            <div class="load-label">aguda / crônica</div>
+          </div>
+        </div>
+        <p class="text-secondary" style="font-size:0.78rem;margin-top:10px;" id="load-hint"></p>
       </div>
 
       <div class="card mt-16" id="records-card" hidden>

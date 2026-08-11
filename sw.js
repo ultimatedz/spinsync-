@@ -30,6 +30,7 @@ const PRECACHE_URLS = [
   './js/vendor/capacitor-filesystem.js',
   './js/tcx-export.js',
   './js/auto-backup.js',
+  './js/workout-service.js',
   './js/physiology.js',
   './js/vendor/chart.umd.js',
   './assets/icons/icon-192.png',

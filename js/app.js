@@ -10,6 +10,7 @@ import * as Progression from './progression.js';
 import * as Haptics from './haptics.js';
 import { buildTCX, tcxFilename } from './tcx-export.js';
 import * as AutoBackup from './auto-backup.js';
+import * as WorkoutService from './workout-service.js';
 
 /** Sem cadência por este tempo com o sensor conectado = parou de pedalar. */
 const AUTO_PAUSE_AFTER_MS = 8000;
@@ -135,7 +136,7 @@ class SpinSyncApp {
 
     document.getElementById('btn-welcome-start')?.addEventListener('click', () => this.showView('profile'));
 
-    document.getElementById('demo-toggle')?.addEventListener('click', () => this.toggleDemo());
+    document.getElementById('demo-toggle')?.addEventListener('change', (e) => this.toggleDemo(e.target.checked));
 
     // Settings
     document.getElementById('setting-haptics')?.addEventListener('change', (e) => {
@@ -148,6 +149,13 @@ class SpinSyncApp {
 
     document.getElementById('setting-autopause')?.addEventListener('change', (e) => {
       Storage.saveSettings({ autoPause: e.target.checked });
+    });
+    document.getElementById('setting-wheel')?.addEventListener('change', (e) => {
+      const mm = Math.max(800, Math.min(3000, parseInt(e.target.value, 10) || 2096));
+      e.target.value = mm;
+      Storage.saveSettings({ wheelCircumferenceMm: mm });
+      // Aplica já no parser em uso, senão só valeria na próxima conexão.
+      this.ble?.cadenceParser?.setWheelCircumference(mm);
     });
     document.getElementById('setting-goal')?.addEventListener('change', (e) => {
       const goal = Math.max(0, Math.min(14, parseInt(e.target.value, 10) || 0));
@@ -340,6 +348,10 @@ class SpinSyncApp {
     set('setting-haptics', settings.haptics);
     set('setting-autopause', settings.autoPause);
     set('setting-goal', settings.weeklyGoal, 'value');
+    set('setting-wheel', settings.wheelCircumferenceMm, 'value');
+    // O modo demo é de sessão, não persistido — mas o interruptor e os banners precisam
+    // refletir o estado atual ao entrar no perfil.
+    this.updateDemoBanner();
   }
 
   /**
@@ -680,8 +692,12 @@ class SpinSyncApp {
     if (!file) return;
     try {
       const payload = JSON.parse(await file.text());
-      const { workouts, plans } = Storage.importAll(payload);
-      this.toast(`Importado: ${workouts} treino(s), ${plans} plano(s).`, 'success');
+      const { workouts, plans, skipped } = Storage.importAll(payload);
+      this.toast(
+        `Importado: ${workouts} treino(s), ${plans} plano(s).`
+          + (skipped ? ` ${skipped} registro(s) ignorado(s) por formato inválido.` : ''),
+        'success'
+      );
       if (this.currentView === 'history') this.renderHistory();
     } catch (e) {
       console.error('[App] Import failed:', e);
@@ -849,14 +865,9 @@ class SpinSyncApp {
     this.openPlanDetail(plan);
   }
 
-  toggleDemo() {
-    this.demoMode = !this.demoMode;
-    const toggle = document.getElementById('demo-toggle');
-    if (toggle) {
-      toggle.classList.toggle('active', this.demoMode);
-      toggle.setAttribute('aria-pressed', String(this.demoMode));
-      toggle.querySelector('.demo-label').textContent = this.demoMode ? 'Modo Demo ATIVO' : 'Modo Demo';
-    }
+  toggleDemo(enabled) {
+    this.demoMode = enabled === undefined ? !this.demoMode : !!enabled;
+    this.updateDemoBanner();
 
     // Reset connections when toggling
     if (this.ble) {
@@ -866,6 +877,13 @@ class SpinSyncApp {
 
     this.updateSensorUI();
     this.updateStartButton();
+  }
+
+  /** O aviso vive na home e na tela de treino, não só onde fica o interruptor. */
+  updateDemoBanner() {
+    document.querySelectorAll('.demo-banner').forEach(el => { el.hidden = !this.demoMode; });
+    const toggle = document.getElementById('demo-toggle');
+    if (toggle) toggle.checked = this.demoMode;
   }
 
   getBLE() {
@@ -939,8 +957,13 @@ class SpinSyncApp {
       }
 
       if (this.recorder && !this.recorder.isPaused) {
-        this.recorder.updateRPM(rpm);
-        this.updateWorkoutRPM(rpm);
+        if (rpm !== undefined) {
+          this.recorder.updateRPM(rpm);
+          this.updateWorkoutRPM(rpm);
+        }
+        // Um sensor só de velocidade não manda rpm nenhum — antes ele era ignorado por
+        // completo mesmo estando conectado.
+        this.recorder.updateWheel(e.detail);
       }
     });
   }
@@ -1084,7 +1107,7 @@ class SpinSyncApp {
     if (lapBanner) lapBanner.hidden = true;
 
     // Start tick loop
-    this.tickInterval = setInterval(() => this.workoutTick(), 1000);
+    this.startTicking(() => this.workoutTick(), 'Treino livre');
 
     // Setup realtime chart
     const canvas = document.getElementById('realtime-canvas');
@@ -1119,6 +1142,7 @@ class SpinSyncApp {
 
     // Update zone
     this.updateZoneBar();
+    this.updateWheelMetrics();
 
     this.checkAutoPause();
     this.mirrorToWatch();
@@ -1127,6 +1151,7 @@ class SpinSyncApp {
     this.persistCounter++;
     if (this.persistCounter % 5 === 0) {
       this.persistWorkoutState('free');
+      this.updateWorkoutNotification('Treino livre', dp);
     }
   }
 
@@ -1222,6 +1247,21 @@ class SpinSyncApp {
   updateWorkoutRPM(rpm) {
     const el = document.getElementById('workout-rpm');
     if (el) el.textContent = rpm || '--';
+  }
+
+  /** Revela e atualiza velocidade/distância, se o sensor de roda estiver mandando. */
+  updateWheelMetrics() {
+    if (!this.recorder?.distanceM) return;
+
+    const speedCard = document.getElementById('workout-speed-card');
+    const distCard = document.getElementById('workout-distance-card');
+    if (speedCard) speedCard.hidden = false;
+    if (distCard) distCard.hidden = false;
+
+    const speed = document.getElementById('workout-speed');
+    const dist = document.getElementById('workout-distance');
+    if (speed) speed.textContent = (this.recorder.currentSpeed || 0).toFixed(1);
+    if (dist) dist.textContent = (this.recorder.distanceM / 1000).toFixed(2);
   }
 
   updateZoneBar() {
@@ -1331,6 +1371,47 @@ class SpinSyncApp {
     this.setPauseButton(false);
   }
 
+  /**
+   * Inicia o loop de gravação, com as duas fontes de tick.
+   *
+   * O setInterval é o que funciona no navegador e em primeiro plano; o heartbeat nativo é
+   * o que sobrevive à tela apagada, porque parte do Android e não passa pelo acelerador de
+   * timers do renderer. As duas chamam o mesmo tick — a deduplicação é do recorder, que
+   * ignora intervalos abaixo de meio segundo.
+   */
+  startTicking(fn, title) {
+    this.stopTicking();
+    this.tickInterval = setInterval(fn, 1000);
+    WorkoutService.start(title);
+    this._tickOff = WorkoutService.onTick(fn);
+  }
+
+  /** Texto da notificação persistente: o que se quer ler sem desbloquear o celular. */
+  updateWorkoutNotification(title, dp, slot) {
+    if (!this.recorder) return;
+    const parts = [this.recorder.getFormattedTime().replace(/^00:/, '')];
+    if (dp?.bpm > 0) parts.push(`${dp.bpm} bpm`);
+    parts.push(`${Math.round(dp?.calories || 0)} kcal`);
+    if (slot) {
+      const mins = Math.floor(slot.remaining / 60);
+      const secs = slot.remaining % 60;
+      parts.push(`${slot.phase.name} · falta ${mins}:${String(secs).padStart(2, '0')}`);
+    }
+    WorkoutService.update(title, parts.join(' · '));
+  }
+
+  stopTicking() {
+    if (this.tickInterval) {
+      clearInterval(this.tickInterval);
+      this.tickInterval = null;
+    }
+    if (this._tickOff) {
+      this._tickOff();
+      this._tickOff = null;
+    }
+    WorkoutService.stop();
+  }
+
   markLap() {
     const lap = this.recorder?.markLap();
     if (!lap) {
@@ -1420,16 +1501,16 @@ class SpinSyncApp {
   stopWorkout() {
     this.hideStopConfirm();
 
-    if (this.tickInterval) {
-      clearInterval(this.tickInterval);
-      this.tickInterval = null;
-    }
+    this.stopTicking();
 
     this.clearWatchWorkout();
 
     if (this.recorder) {
       this.recorder.stop();
       this.viewingSummary = this.recorder.getSummary();
+      // Marca no próprio treino: sem isto uma sessão do simulador ficava indistinguível
+      // de uma real em histórico, recordes, tendência e escada de progressão.
+      if (this.demoMode) this.viewingSummary.demo = true;
     }
 
     // Save FIRST. Persisting only from the summary buttons meant one tap on the bottom
@@ -1481,11 +1562,24 @@ class SpinSyncApp {
     document.getElementById('stat-avg-rpm').textContent = summary.avgRPM || '--';
     document.getElementById('stat-max-rpm').textContent = summary.maxRPM || '--';
 
+    // Só aparecem quando houve sensor de roda no treino.
+    const hasDistance = (summary.distanceM || 0) > 0;
+    document.getElementById('stat-distance-card').hidden = !hasDistance;
+    document.getElementById('stat-speed-card').hidden = !hasDistance;
+    if (hasDistance) {
+      document.getElementById('stat-distance').textContent = (summary.distanceM / 1000).toFixed(2);
+      document.getElementById('stat-avg-speed').textContent = summary.avgSpeedKmh || '--';
+    }
+
     this.showView('summary');
 
     // A ride with no sensor data draws nothing, so show an empty state instead of three
     // captioned blank boxes.
-    const hasData = summary.dataPoints.length > 0;
+    // Testa se há batimento, não se há pontos: um treino só com cadência tem centenas de
+    // pontos com bpm 0, passava por este guard e ia desenhar um gráfico de FC vazio.
+    // A guarda de array também protege contra treino importado sem dataPoints.
+    const points = summary.dataPoints || [];
+    const hasData = points.some(p => p.bpm > 0 || p.rpm > 0);
     const chartsEl = document.getElementById('summary-charts');
     const emptyEl = document.getElementById('summary-charts-empty');
     if (chartsEl) chartsEl.hidden = !hasData;
@@ -1581,6 +1675,41 @@ class SpinSyncApp {
       : 'Sem tempo registrado em nenhuma zona.';
   }
 
+  renderTrainingLoad() {
+    const card = document.getElementById('load-card');
+    if (!card) return;
+
+    const load = Analytics.getTrainingLoad();
+    if (!load) { card.hidden = true; return; }
+    card.hidden = false;
+
+    document.getElementById('load-acute').textContent = load.acute;
+    document.getElementById('load-chronic').textContent = load.chronic ?? '--';
+
+    const ratioEl = document.getElementById('load-ratio');
+    ratioEl.textContent = load.ratio ?? '--';
+    ratioEl.className = 'load-value'
+      + (load.ratio >= 1.5 ? ' danger' : load.ratio >= 1.3 ? ' warn' : '');
+
+    const hint = document.getElementById('load-hint');
+    if (!hint) return;
+    if (!load.chronic) {
+      hint.textContent = 'Carga = minutos × esforço percebido. Com mais algumas semanas dá para comparar com a sua média.';
+    } else if (load.ratio >= 1.5) {
+      hint.textContent = `Sua semana está ${load.ratio}× a média das últimas quatro. Salto grande de volume é o padrão associado a lesão — vale segurar.`;
+    } else if (load.ratio >= 1.3) {
+      hint.textContent = `Semana ${load.ratio}× acima da média. Subida forte, mas ainda dentro do razoável.`;
+    } else if (load.ratio < 0.8) {
+      hint.textContent = `Semana ${load.ratio}× a média. Pode ser descanso planejado — ou perda de ritmo.`;
+    } else {
+      hint.textContent = 'Volume em linha com as últimas semanas.';
+    }
+
+    if (load.missingRpe > 0) {
+      hint.textContent += ` (${load.missingRpe} treino(s) sem esforço informado não entram na conta.)`;
+    }
+  }
+
   renderRecords() {
     const card = document.getElementById('records-card');
     const list = document.getElementById('records-list');
@@ -1598,9 +1727,11 @@ class SpinSyncApp {
     };
 
     const rows = [
-      ['Treino mais longo', hhmm(r.longest.durationSeconds), when(r.longest)],
-      ['Mais calorias', `${r.mostCalories.calories} kcal`, when(r.mostCalories)],
-      ['FC mais alta', `${r.highestBPM.maxBPM} bpm`, when(r.highestBPM)],
+      // getRecords escolhe o melhor com `|| 0`, mas a renderização lia o campo cru: um
+      // treino legado sem maxBPM mostrava "undefined bpm" na tela.
+      ['Treino mais longo', hhmm(r.longest.durationSeconds || 0), when(r.longest)],
+      ['Mais calorias', `${r.mostCalories.calories || 0} kcal`, when(r.mostCalories)],
+      ['FC mais alta', `${r.highestBPM.maxBPM || '--'} bpm`, when(r.highestBPM)],
     ];
     if (r.hardestSeconds > 0) {
       rows.push(['Mais tempo em Z4+', hhmm(r.hardestSeconds), when(r.hardest)]);
@@ -1658,6 +1789,7 @@ class SpinSyncApp {
 
     // Records and the fitness trend read the whole history, so they ignore the period
     // filter on purpose — a personal best is not a property of the last 7 days.
+    this.renderTrainingLoad();
     this.renderRecords();
     this.renderFitnessTrend();
 
@@ -1713,6 +1845,7 @@ class SpinSyncApp {
 
     // Trim dataPoints for storage efficiency (keep 500 max)
     const toSave = { ...summary };
+    toSave.dataPoints = toSave.dataPoints || [];
     if (toSave.dataPoints.length > 500) {
       const step = Math.ceil(toSave.dataPoints.length / 500);
       toSave.dataPoints = toSave.dataPoints.filter((_, i) => i % step === 0);
@@ -1801,8 +1934,10 @@ class SpinSyncApp {
                  so the click target stays the full row while staying valid HTML (a nested
                  delete button cannot live inside another button). -->
             <button type="button" class="history-open" data-workout-id="${escapeHtml(w.id)}">
-              <span class="history-date">${dateStr} · ${timeStr}${w.planName ? ` · ${escapeHtml(w.planName)}` : ''}</span>
-              <span class="history-meta">${w.durationFormatted} · FC média ${w.avgBPM || '--'} bpm</span>
+              <span class="history-date">${dateStr} · ${timeStr}${w.planName ? ` · ${escapeHtml(w.planName)}` : ''}${w.demo ? '<span class="history-demo-tag">demo</span>' : ''}</span>
+              <span class="history-meta">${w.durationFormatted} · FC média ${w.avgBPM || '--'} bpm${
+                w.rpe ? `<span class="history-rpe" style="background:${rpeColor(w.rpe)}33;color:${rpeColor(w.rpe)}">RPE ${w.rpe}</span>` : ''
+              }${w.note ? ' <span aria-label="Tem anotação" title="Tem anotação">📝</span>' : ''}</span>
             </button>
           </div>
           <div class="history-cal">${w.calories} kcal</div>
@@ -2097,7 +2232,7 @@ class SpinSyncApp {
       pauseBtn.innerHTML = '⏸ Pausar';
     }
 
-    this.tickInterval = setInterval(() => this.guidedTick(), 1000);
+    this.startTicking(() => this.guidedTick(), this.guidedPlan?.name || 'Treino guiado');
   }
 
   /**
@@ -2194,6 +2329,7 @@ class SpinSyncApp {
     this.persistCounter++;
     if (this.persistCounter % 5 === 0) {
       this.persistWorkoutState('guided');
+      this.updateWorkoutNotification(this.guidedPlan?.name || 'Treino guiado', dp, slot);
     }
   }
 
@@ -2322,16 +2458,16 @@ class SpinSyncApp {
   stopGuidedWorkout() {
     this.closeModal('guided-stop-modal');
 
-    if (this.tickInterval) {
-      clearInterval(this.tickInterval);
-      this.tickInterval = null;
-    }
+    this.stopTicking();
 
     this.clearWatchWorkout();
 
     if (this.recorder) {
       this.recorder.stop();
       this.viewingSummary = this.recorder.getSummary();
+      // Marca no próprio treino: sem isto uma sessão do simulador ficava indistinguível
+      // de uma real em histórico, recordes, tendência e escada de progressão.
+      if (this.demoMode) this.viewingSummary.demo = true;
       if (this.viewingSummary && this.guidedPlan) {
         this.viewingSummary.planName = this.guidedPlan.name;
         // planId is what lets the progression engine grade this session later.
@@ -2474,7 +2610,7 @@ class SpinSyncApp {
     this.requestWakeLock();
 
     // Start tick loop
-    this.tickInterval = setInterval(() => this.workoutTick(), 1000);
+    this.startTicking(() => this.workoutTick(), 'Treino livre');
 
     // Setup realtime chart
     const canvas = document.getElementById('realtime-canvas');
@@ -2553,7 +2689,7 @@ class SpinSyncApp {
     if (fill) fill.style.width = `${pct}%`;
 
     // Start tick
-    this.tickInterval = setInterval(() => this.guidedTick(), 1000);
+    this.startTicking(() => this.guidedTick(), this.guidedPlan?.name || 'Treino guiado');
 
     // Setup BLE if demo mode
     if (this.demoMode) {
@@ -2724,6 +2860,11 @@ class SpinSyncApp {
 /** Seconds of warning before a phase change and before the workout ends. */
 const HAPTIC_WARNING_LEAD = 5;
 const HAPTIC_FINAL_LEAD = 10;
+
+/** Cor do selo de RPE: caminha a paleta de zonas, então o esforço se lê pela cor. */
+function rpeColor(rpe) {
+  return ZONES[Math.min(4, Math.max(0, Math.floor((rpe - 1) / 2)))].color;
+}
 
 /** Plan and phase names are user input rendered through innerHTML. */
 function escapeHtml(value) {

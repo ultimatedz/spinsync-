@@ -17,22 +17,16 @@ export class WorkoutCharts {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
 
-    const points = summary.dataPoints;
+    const points = summary.dataPoints || [];
     const labels = points.map(p => this._formatTimestamp(p.timestamp));
     const bpmData = points.map(p => p.bpm);
-    const maxHR = summary.maxHR;
 
     // Reduce data points for performance (max ~300 points)
     const { reducedLabels, reducedData } = this._reduceData(labels, bpmData, 300);
 
-    // Zone background bands as annotations
-    const zoneBands = ZONES.map(z => ({
-      type: 'box',
-      yMin: z.minPct * maxHR,
-      yMax: z.maxPct * maxHR,
-      backgroundColor: z.color + '15',
-      borderWidth: 0,
-    }));
+    // Havia aqui um `zoneBands` montando faixas coloridas de fundo por zona. Nunca foi
+    // passado ao Chart.js — exigiria o chartjs-plugin-annotation, que não está no projeto —
+    // então era só cálculo morto (e NaN em treino sem maxHR). Removido.
 
     const chart = new Chart(ctx, {
       type: 'line',
@@ -76,8 +70,14 @@ export class WorkoutCharts {
           },
           y: {
             display: true,
-            min: Math.max(0, Math.min(...reducedData.filter(v => v > 0)) - 10),
-            max: Math.max(...reducedData) + 10,
+            // Math.min() de array vazio é Infinity: num treino só com cadência o eixo
+            // ficava com min: Infinity e o gráfico não desenhava nada.
+            ...(() => {
+              const beats = reducedData.filter(v => v > 0);
+              return beats.length
+                ? { min: Math.max(0, Math.min(...beats) - 10), max: Math.max(...beats) + 10 }
+                : { min: 0, max: 200 };
+            })(),
             ticks: { color: '#6E7681', font: { size: 10 } },
             grid: { color: '#21262D' }
           }
@@ -163,10 +163,12 @@ export class WorkoutCharts {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
 
-    const totalSeconds = Object.values(summary.zoneTime).reduce((a, b) => a + b, 0);
+    // zoneTime pode não existir em treino importado ou gravado por versão antiga; sem a
+    // guarda, Object.values(undefined) derrubava a tela de resumo inteira.
+    const zoneTime = summary.zoneTime || {};
 
     const labels = ZONES.map(z => z.name);
-    const data = ZONES.map(z => Math.round((summary.zoneTime[z.id] || 0) / 60 * 10) / 10);
+    const data = ZONES.map(z => Math.round((zoneTime[z.id] || 0) / 60 * 10) / 10);
     const colors = ZONES.map(z => z.color);
 
     const chart = new Chart(ctx, {
