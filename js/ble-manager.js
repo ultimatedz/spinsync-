@@ -12,6 +12,40 @@ const CSC_MEASUREMENT = '00002a5b-0000-1000-8000-00805f9b34fb';
 // not have it, and the write fails harmlessly once before being disabled.
 const HAPTIC_SERVICE = '6b1a0001-4c2f-4d9a-9b3e-1f7a5c8d2e60';
 const HAPTIC_CHARACTERISTIC = '6b1a0002-4c2f-4d9a-9b3e-1f7a5c8d2e60';
+const WORKOUT_CHARACTERISTIC = '6b1a0003-4c2f-4d9a-9b3e-1f7a5c8d2e60';
+
+/**
+ * Packs the live workout state for the watch screen. Must stay byte-compatible with
+ * parseWorkoutPacket in android/wear/.../GattUuids.kt.
+ *
+ *   byte 0    flags — bit0 active, bit1 guided, bit2 paused
+ *   byte 1-2  elapsed seconds, uint16 LE
+ *   byte 3-4  calories, uint16 LE
+ *   byte 5-6  seconds to next phase, uint16 LE (0xFFFF = none)
+ *   byte 7    phase shift: 0 none, 1 harder, 2 easier, 3 same
+ *   byte 8    current heart-rate zone, 0-5
+ *   byte 9-10 target cadence range
+ *
+ * 11 bytes, so it fits the 20-byte default ATT payload and never forces an MTU exchange.
+ */
+export function buildWorkoutPacket(s = {}) {
+  const buf = new ArrayBuffer(11);
+  const view = new DataView(buf);
+  const u16 = (n) => Math.max(0, Math.min(0xfffe, Math.round(n || 0)));
+
+  view.setUint8(0, (s.active ? 1 : 0) | (s.guided ? 2 : 0) | (s.paused ? 4 : 0));
+  view.setUint16(1, u16(s.elapsedSeconds), true);
+  view.setUint16(3, u16(s.calories), true);
+  view.setUint16(5, s.secondsToNextPhase == null ? 0xffff : u16(s.secondsToNextPhase), true);
+  view.setUint8(7, s.shift || 0);
+  view.setUint8(8, Math.max(0, Math.min(5, s.zone || 0)));
+  view.setUint8(9, Math.max(0, Math.min(255, s.rpmMin || 0)));
+  view.setUint8(10, Math.max(0, Math.min(255, s.rpmMax || 0)));
+  return view;
+}
+
+/** Phase shift ordinals — mirror of PhaseShift in GattUuids.kt. */
+export const PHASE_SHIFT = { NONE: 0, HARDER: 1, EASIER: 2, SAME: 3 };
 
 // Short UUIDs for Web Bluetooth API
 const HR_SERVICE_SHORT = 0x180D;
@@ -275,6 +309,26 @@ export class BLENativeManager extends EventTarget {
     }
   }
 
+  /**
+   * Pushes elapsed time, calories and the upcoming phase change to the watch screen.
+   * Same no-op-on-a-plain-strap contract as sendHaptic.
+   */
+  async sendWorkoutStatus(status) {
+    const ch = this._channels.hr;
+    if (!ch.connected || !ch.deviceId || !this._ble || this._workoutUnsupported) return false;
+
+    try {
+      await this._ble.writeWithoutResponse(
+        ch.deviceId, HAPTIC_SERVICE, WORKOUT_CHARACTERISTIC, buildWorkoutPacket(status)
+      );
+      return true;
+    } catch (err) {
+      this._workoutUnsupported = true;
+      console.log('[BLE Native] Workout mirroring unavailable:', err?.message);
+      return false;
+    }
+  }
+
   _onData(kind, value) {
     const ch = this._channels[kind];
     // Deliberately before parsing: a packet reporting *no* sensor contact still proves the
@@ -521,6 +575,19 @@ export class BLEManager extends EventTarget {
     }
   }
 
+  async sendWorkoutStatus(status) {
+    if (!this._hrConnected || !this.hrServer?.connected || this._workoutUnsupported) return false;
+    try {
+      const service = await this.hrServer.getPrimaryService(HAPTIC_SERVICE);
+      const characteristic = await service.getCharacteristic(WORKOUT_CHARACTERISTIC);
+      await characteristic.writeValueWithoutResponse(buildWorkoutPacket(status));
+      return true;
+    } catch (err) {
+      this._workoutUnsupported = true;
+      return false;
+    }
+  }
+
   async connectCSC() {
     try {
       this._emit('csc-status', 'scanning');
@@ -699,6 +766,7 @@ export class BLESimulator extends EventTarget {
   cancelReconnect() { /* nothing to cancel in demo mode */ }
   async restoreSavedDevices() { /* nothing to restore in demo mode */ }
   async sendHaptic() { return false; /* no watch in demo mode */ }
+  async sendWorkoutStatus() { return false; /* no watch in demo mode */ }
 
   _emit(type, data) {
     this.dispatchEvent(new CustomEvent(type, { detail: data }));

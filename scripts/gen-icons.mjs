@@ -12,7 +12,7 @@
  * below is hand-rolled on top of node:zlib.
  */
 import { deflateSync } from 'node:zlib';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -194,13 +194,15 @@ class Canvas {
 /**
  * A spinning wheel with a heart-rate trace across it — the two things the app measures.
  *
- * @param {number} scale  Content scale. Maskable icons get 0.8 so nothing lands under
- *                        the circular mask Android applies on some launchers.
- * @param {number} corner Background corner radius. 0.5 = circle, 0 = full bleed square.
+ * @param {number} scale      Content scale. Maskable icons get 0.8 so nothing lands under
+ *                            the circular mask Android applies on some launchers.
+ * @param {number} corner     Background corner radius. 0.5 = circle, 0 = full bleed square.
+ * @param {boolean} background Adaptive-icon foregrounds draw on transparency: the
+ *                            background layer is a separate colour resource.
  */
-function drawIcon(size, { scale = 1, corner = 0.22 } = {}) {
+function drawIcon(size, { scale = 1, corner = 0.22, background = true } = {}) {
   const c = new Canvas(size);
-  c.fillRoundRect(0, 0, 1, 1, corner, BG);
+  if (background) c.fillRoundRect(0, 0, 1, 1, corner, BG);
 
   const at = (v) => 0.5 + (v - 0.5) * scale;
   const ring = 0.31 * scale;
@@ -243,4 +245,41 @@ for (const [name, size, opts] of OUTPUTS) {
   const png = drawIcon(size, opts);
   writeFileSync(resolve(outDir, name), png);
   console.log(`[icons] ${name} (${size}x${size}, ${png.length} bytes)`);
+}
+
+// ── Android launcher icons ─────────────────────────────────────────────────
+//
+// The app shipped with the stock Capacitor launcher icon on a white background. These
+// overwrite the generated mipmaps in place, keeping the density buckets and filenames the
+// existing adaptive-icon XML already points at.
+
+const androidRes = resolve(root, 'android', 'app', 'src', 'main', 'res');
+
+/** dp sizes per bucket: legacy icon is 48dp, adaptive foreground is 108dp. */
+const DENSITIES = [
+  ['mdpi', 1],
+  ['hdpi', 1.5],
+  ['xhdpi', 2],
+  ['xxhdpi', 3],
+  ['xxxhdpi', 4],
+];
+
+for (const [bucket, factor] of DENSITIES) {
+  const dir = resolve(androidRes, `mipmap-${bucket}`);
+  if (!existsSync(dir)) continue;
+
+  const legacy = Math.round(48 * factor);
+  writeFileSync(resolve(dir, 'ic_launcher.png'), drawIcon(legacy, { corner: 0.22 }));
+  writeFileSync(resolve(dir, 'ic_launcher_round.png'), drawIcon(legacy, { corner: 0.5 }));
+
+  // Adaptive foreground: 108dp canvas, but only the centre 72dp is guaranteed visible —
+  // launchers crop the rest to whatever mask shape they use. 0.88 keeps the whole wheel
+  // and trace inside that safe circle.
+  const fg = Math.round(108 * factor);
+  writeFileSync(
+    resolve(dir, 'ic_launcher_foreground.png'),
+    drawIcon(fg, { scale: 0.88, background: false }),
+  );
+
+  console.log(`[icons] android mipmap-${bucket} (${legacy}px legacy, ${fg}px foreground)`);
 }

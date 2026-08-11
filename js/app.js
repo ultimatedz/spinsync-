@@ -1,4 +1,4 @@
-import { createBLEManager, BLESimulator } from './ble-manager.js';
+import { createBLEManager, BLESimulator, PHASE_SHIFT } from './ble-manager.js';
 import { WorkoutRecorder } from './workout-recorder.js';
 import { WorkoutCharts } from './charts.js';
 import { ZoneCalculator, ZONES } from './zone-calculator.js';
@@ -914,11 +914,59 @@ class SpinSyncApp {
     // Update zone
     this.updateZoneBar();
 
+    this.mirrorToWatch();
+
     // Persist state every 5 seconds
     this.persistCounter++;
     if (this.persistCounter % 5 === 0) {
       this.persistWorkoutState('free');
     }
+  }
+
+  /**
+   * Mirrors the workout onto the watch face.
+   *
+   * The watch only ever knew its own BPM; elapsed time, calories and the phase schedule
+   * live here. On a bike the phone is clamped out of easy reach, so the wrist is the
+   * screen that actually gets read mid-effort.
+   *
+   * Fire and forget, once per tick: the write is writeWithoutResponse and disables itself
+   * permanently on a plain strap that has no such characteristic.
+   */
+  mirrorToWatch() {
+    const ble = this.ble;
+    if (!ble?.sendWorkoutStatus || !this.recorder) return;
+
+    const status = {
+      active: true,
+      paused: !!this.recorder.isPaused,
+      elapsedSeconds: Math.round(this.recorder.elapsedMs / 1000),
+      calories: Math.round(this.recorder.totalCalories || 0),
+      zone: this.recorder.getCurrentZone()?.id || 0,
+      guided: !!this.guidedPlan,
+    };
+
+    if (this.guidedPlan) {
+      const phase = this.guidedPlan.phases[this.guidedPhaseIndex];
+      const next = this.guidedPlan.phases[this.guidedPhaseIndex + 1];
+      if (phase) {
+        status.rpmMin = phase.rpmMin;
+        status.rpmMax = phase.rpmMax;
+        if (next) {
+          status.secondsToNextPhase = Math.max(0, phase.duration - this.guidedPhaseElapsed);
+          status.shift = next.zone > phase.zone ? PHASE_SHIFT.HARDER
+            : next.zone < phase.zone ? PHASE_SHIFT.EASIER
+              : PHASE_SHIFT.SAME;
+        }
+      }
+    }
+
+    ble.sendWorkoutStatus(status).catch(() => {});
+  }
+
+  /** Tells the watch the ride is over, so it stops showing a frozen timer. */
+  clearWatchWorkout() {
+    this.ble?.sendWorkoutStatus?.({ active: false }).catch(() => {});
   }
 
   /**
@@ -1071,6 +1119,8 @@ class SpinSyncApp {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+
+    this.clearWatchWorkout();
 
     if (this.recorder) {
       this.recorder.stop();
@@ -1605,6 +1655,7 @@ class SpinSyncApp {
     // Update UI
     this.updateGuidedTimers(phase);
     this.updateGuidedTargets(dp);
+    this.mirrorToWatch();
 
     // Update calories
     document.getElementById('guided-calories').textContent = Math.round(dp.calories);
@@ -1753,6 +1804,8 @@ class SpinSyncApp {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
     }
+
+    this.clearWatchWorkout();
 
     if (this.recorder) {
       this.recorder.stop();

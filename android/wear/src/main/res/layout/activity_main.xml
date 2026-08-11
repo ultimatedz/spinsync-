@@ -21,8 +21,8 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp">
+            android:paddingTop="4dp"
+            android:paddingBottom="2dp">
 
             <TextView
                 android:id="@+id/txt_bpm"
@@ -30,17 +30,79 @@
                 android:layout_height="wrap_content"
                 android:text="@string/bpm_placeholder"
                 android:textColor="#EF5350"
-                android:textSize="40sp"
+                android:textSize="36sp"
                 android:textStyle="bold"
                 android:includeFontPadding="false" />
 
+            <!-- Hidden once a workout is running: the extra rows push the Parar button off
+                 the bottom of a 450px round screen, and a big red number over a kcal figure
+                 needs no unit label. -->
             <TextView
+                android:id="@+id/txt_bpm_unit"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="bpm"
+                android:text="@string/unit_bpm"
                 android:textColor="#8B949E"
                 android:textSize="11sp"
                 android:layout_marginBottom="4dp" />
+
+            <!-- Live workout figures, pushed by the phone over the vendor GATT service.
+                 Hidden until a workout is actually running: on an idle watch these would
+                 just be three zeros taking up the screen. -->
+            <LinearLayout
+                android:id="@+id/row_workout"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:visibility="gone"
+                android:layout_marginBottom="4dp">
+
+                <TextView
+                    android:id="@+id/txt_duration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/duration_placeholder"
+                    android:textColor="#C9D1D9"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/dot_separator"
+                    android:textColor="#484F58"
+                    android:textSize="15sp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp" />
+
+                <TextView
+                    android:id="@+id/txt_calories"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/calories_placeholder"
+                    android:textColor="#FFA726"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- The reason this screen exists: on a bike the phone is clamped out of reach,
+                 so "ease off in 8s" has to land on the wrist. -->
+            <TextView
+                android:id="@+id/txt_next_phase"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:visibility="gone"
+                android:textColor="#F0F6FC"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:layout_marginBottom="2dp"
+                android:layout_marginStart="10dp"
+                android:layout_marginEnd="10dp"
+                android:background="@drawable/next_phase_bg" />
 
             <TextView
                 android:id="@+id/txt_status"

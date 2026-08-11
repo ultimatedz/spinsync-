@@ -4,4 +4,10 @@
     <color name="hr_red">#EF5350</color>
     <color name="text_primary">#C9D1D9</color>
     <color name="text_secondary">#8B949E</color>
+
+    <!-- Next-phase pill. The default is the neutral tint in the drawable; MainActivity
+         swaps in harder/easier at runtime. -->
+    <color name="next_phase_tint">#21262D</color>
+    <color name="next_phase_harder">#5C2B2A</color>
+    <color name="next_phase_easier">#1E4620</color>
 </resources>

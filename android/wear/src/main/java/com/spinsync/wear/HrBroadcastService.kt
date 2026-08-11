@@ -87,6 +87,7 @@ class HrBroadcastService : LifecycleService() {
     @Volatile private var sensorState = SensorState.UNKNOWN
     @Volatile private var sensorStateSince = 0L
     @Volatile private var sessionTakenOver = false
+    private var fakeWorkoutStartedAt = 0L
 
     private var lastNotifAt = 0L
     private var lastDiagAt = 0L
@@ -200,6 +201,34 @@ class HrBroadcastService : LifecycleService() {
         handler.post { publishCurrent(force = false) }
     }
 
+    /**
+     * Development-only: pretends the phone is mirroring a guided ride, so the workout row
+     * and the next-phase pill can be checked on a real watch without pairing, starting a
+     * plan and waiting for a phase boundary. Rides along with [USE_FAKE_HEART_RATE].
+     */
+    private fun publishFakeWorkout(now: Long) {
+        if (fakeWorkoutStartedAt == 0L) fakeWorkoutStartedAt = now
+        val elapsed = ((now - fakeWorkoutStartedAt) / 1000).toInt()
+        // 30 s phases, alternating harder / easier.
+        val intoPhase = elapsed % 30
+        val phaseIndex = elapsed / 30
+        HrState.update {
+            it.copy(
+                workout = WorkoutStatus(
+                    active = true,
+                    guided = true,
+                    elapsedSeconds = elapsed,
+                    calories = elapsed * 3,
+                    secondsToNextPhase = 30 - intoPhase,
+                    shift = if (phaseIndex % 2 == 0) PhaseShift.HARDER else PhaseShift.EASIER,
+                    zone = 3 + (phaseIndex % 2),
+                    rpmMin = 70,
+                    rpmMax = 85,
+                )
+            )
+        }
+    }
+
     /** Restarts the debounce clock only on an actual transition, never on a repeat. */
     private fun setSensorState(state: SensorState) {
         if (sensorState == state) return
@@ -232,6 +261,7 @@ class HrBroadcastService : LifecycleService() {
         lastPublishAt = now
         gatt.publish(bpm, contact)
         updateUiState(bpm, contact, degraded)
+        if (USE_FAKE_HEART_RATE) publishFakeWorkout(now)
         maybeUpdateNotification(bpm)
 
         if (now - lastDiagAt >= DIAG_INTERVAL_MS) {
@@ -290,6 +320,9 @@ class HrBroadcastService : LifecycleService() {
 
             is HrGattServer.GattEvent.HapticRequested ->
                 HapticPatterns.play(this, event.patternId)
+
+            is HrGattServer.GattEvent.WorkoutUpdated ->
+                HrState.update { it.copy(workout = event.status) }
 
             is HrGattServer.GattEvent.Failed -> {
                 Log.e(LOG_TAG, "GATT failure: ${event.reason} — ${event.detail}")

@@ -44,6 +44,8 @@ class HrGattServer(
         data class SubscribersChanged(val count: Int) : GattEvent
         /** The phone asked for a haptic cue. */
         data class HapticRequested(val patternId: Int) : GattEvent
+        /** The phone pushed live workout state (time, calories, next phase). */
+        data class WorkoutUpdated(val status: WorkoutStatus) : GattEvent
         data class Failed(val reason: Reason, val detail: String) : GattEvent
     }
 
@@ -155,11 +157,21 @@ class HrGattServer(
     private fun addHapticService() {
         val server = gattServer ?: return
         val service = BluetoothGattService(HAPTIC_SERVICE, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+        val writeOnly = BluetoothGattCharacteristic.PROPERTY_WRITE or
+            BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
         service.addCharacteristic(
             BluetoothGattCharacteristic(
                 HAPTIC_CHARACTERISTIC,
-                BluetoothGattCharacteristic.PROPERTY_WRITE
-                    or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+                writeOnly,
+                BluetoothGattCharacteristic.PERMISSION_WRITE,
+            )
+        )
+        // Same service rather than a third one: addService is asynchronous and only one
+        // may be in flight, so every extra service is another round trip at startup.
+        service.addCharacteristic(
+            BluetoothGattCharacteristic(
+                WORKOUT_CHARACTERISTIC,
+                writeOnly,
                 BluetoothGattCharacteristic.PERMISSION_WRITE,
             )
         )
@@ -355,6 +367,9 @@ class HrGattServer(
         ) {
             if (characteristic.uuid == HAPTIC_CHARACTERISTIC && value.isNotEmpty()) {
                 onEvent(GattEvent.HapticRequested(value[0].toInt() and 0xff))
+            }
+            if (characteristic.uuid == WORKOUT_CHARACTERISTIC) {
+                parseWorkoutPacket(value)?.let { onEvent(GattEvent.WorkoutUpdated(it)) }
             }
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)

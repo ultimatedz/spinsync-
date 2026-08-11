@@ -25,6 +25,19 @@
     <string name="detail_session_busy">Outro app assumiu a sessão</string>
 
     <string name="bpm_placeholder">--</string>
+    <string name="unit_bpm">bpm</string>
+    <string name="dot_separator">·</string>
+    <string name="duration_placeholder">0:00</string>
+    <string name="calories_placeholder">0 kcal</string>
+    <string name="calories_fmt">%1$d kcal</string>
+
+    <!-- Next-phase warning. "Sobe"/"Alivia" beat "Zona 4" here: mid-effort you need the
+         action, not the label. -->
+    <string name="next_harder_fmt">Sobe em %1$s</string>
+    <string name="next_easier_fmt">Alivia em %1$s</string>
+    <string name="next_same_fmt">Troca em %1$s</string>
+    <string name="workout_paused">Treino pausado</string>
+    <string name="target_rpm_fmt">Alvo %1$d-%2$d rpm</string>
     <string name="subscribers_none">0 apps conectados</string>
     <string name="subscribers_fmt">%1$d app(s) conectado(s)</string>
 

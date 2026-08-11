@@ -36,6 +36,8 @@ data class HrUiState(
     val subscribers: Int = 0,
     val sourceMode: SourceMode = SourceMode.EXERCISE,
     val detail: String? = null,
+    /** Pushed by the phone over the vendor service; all zeros until a workout starts. */
+    val workout: WorkoutStatus = WorkoutStatus(),
 ) {
     val isRunning: Boolean
         get() = status != BroadcastStatus.IDLE

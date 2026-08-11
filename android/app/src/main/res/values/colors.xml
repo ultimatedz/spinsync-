@@ -6,5 +6,8 @@
 -->
 <resources>
     <color name="spinsyncBackground">#0D1117</color>
+    <color name="spinsyncSurface">#161B22</color>
     <color name="spinsyncAccent">#2979FF</color>
+    <color name="spinsyncTextPrimary">#F0F6FC</color>
+    <color name="spinsyncTextSecondary">#8B949E</color>
 </resources>

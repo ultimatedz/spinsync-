@@ -4,6 +4,7 @@ import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -11,6 +12,8 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.isVisible
+import java.util.Locale
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -130,6 +133,71 @@ class MainActivity : ComponentActivity() {
         }
 
         binding.btnToggle.setText(if (state.isRunning) R.string.btn_stop else R.string.btn_start)
+
+        renderWorkout(state.workout)
+    }
+
+    /**
+     * Time, calories and the upcoming effort change — none of which the watch can know on
+     * its own; the phone pushes them over the vendor GATT service.
+     */
+    private fun renderWorkout(workout: WorkoutStatus) {
+        binding.rowWorkout.isVisible = workout.active
+        // Reclaim vertical space for the two new rows, so the button stays on screen.
+        binding.txtBpmUnit.isVisible = !workout.active
+        binding.txtSubscribers.isVisible = !workout.active
+
+        if (!workout.active) {
+            binding.txtNextPhase.isVisible = false
+            return
+        }
+
+        binding.txtDuration.text = formatDuration(workout.elapsedSeconds)
+        binding.txtCalories.text = getString(R.string.calories_fmt, workout.calories)
+
+        val next = workout.secondsToNextPhase
+        val label = when {
+            workout.paused -> getString(R.string.workout_paused)
+
+            next != null && workout.shift != PhaseShift.NONE -> {
+                val countdown = formatDuration(next)
+                when (workout.shift) {
+                    PhaseShift.HARDER -> getString(R.string.next_harder_fmt, countdown)
+                    PhaseShift.EASIER -> getString(R.string.next_easier_fmt, countdown)
+                    else -> getString(R.string.next_same_fmt, countdown)
+                }
+            }
+
+            // Free rides have no phases, so the cadence target is the useful thing left.
+            workout.rpmMax > 0 ->
+                getString(R.string.target_rpm_fmt, workout.rpmMin, workout.rpmMax)
+
+            else -> null
+        }
+
+        binding.txtNextPhase.isVisible = label != null
+        if (label == null) return
+
+        binding.txtNextPhase.text = label
+        val tint = when {
+            workout.paused -> R.color.next_phase_tint
+            workout.shift == PhaseShift.HARDER -> R.color.next_phase_harder
+            workout.shift == PhaseShift.EASIER -> R.color.next_phase_easier
+            else -> R.color.next_phase_tint
+        }
+        binding.txtNextPhase.backgroundTintList =
+            ColorStateList.valueOf(ContextCompat.getColor(this, tint))
+    }
+
+    private fun formatDuration(totalSeconds: Int): String {
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            String.format(Locale.getDefault(), "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.getDefault(), "%d:%02d", minutes, seconds)
+        }
     }
 
     // ── Actions ──────────────────────────────────────────────────────────────
