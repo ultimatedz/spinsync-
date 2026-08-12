@@ -62,6 +62,9 @@ const MAX_RECONNECT_ATTEMPTS = 12;
 const HR_STALE_MS = 12000;
 const WATCHDOG_INTERVAL_MS = 5000;
 
+/** Com o Bluetooth desligado, checa de novo neste ritmo em vez de gastar tentativas. */
+const BT_OFF_RECHECK_MS = 5000;
+
 /**
  * Detect if running in Capacitor native context.
  */
@@ -394,6 +397,22 @@ export class BLENativeManager extends EventTarget {
     ch.reconnectTimer = setTimeout(async () => {
       ch.reconnectTimer = null;
       if (!ch.autoReconnect || !ch.deviceId) return;
+
+      // Bluetooth desligado não é falha de conexão: tentar 12 vezes com backoff não vai
+      // resolver, e o usuário ficava vendo "Reconectando..." sem nunca ser informado do
+      // que precisa fazer. O estado é checado antes de cada tentativa porque ele pode
+      // mudar no meio do treino.
+      if (!(await this._bluetoothOn())) {
+        this._emit(`${kind}-status`, 'bt-off');
+        // Não consome tentativa: o contador é para falha real de conexão.
+        ch.reconnectAttempt = Math.max(0, ch.reconnectAttempt - 1);
+        ch.reconnectTimer = setTimeout(() => {
+          ch.reconnectTimer = null;
+          this._scheduleReconnect(kind);
+        }, BT_OFF_RECHECK_MS);
+        return;
+      }
+
       try {
         await this._attach(kind, ch.deviceId, ch.deviceName);
       } catch (err) {
@@ -401,6 +420,30 @@ export class BLENativeManager extends EventTarget {
         this._scheduleReconnect(kind);
       }
     }, delay);
+  }
+
+  /** @returns {Promise<boolean>} false só quando o adaptador está comprovadamente desligado. */
+  async _bluetoothOn() {
+    if (!this._ble?.isEnabled) return true;
+    try {
+      const res = await this._ble.isEnabled();
+      return res?.value !== false;
+    } catch {
+      // Sem resposta confiável, assume ligado e deixa a conexão falhar normalmente.
+      return true;
+    }
+  }
+
+  /** Abre o diálogo do sistema para ligar o Bluetooth. */
+  async requestBluetooth() {
+    try {
+      await this._ensureInitialized();
+      await this._ble.requestEnable();
+      return await this._bluetoothOn();
+    } catch (err) {
+      console.log('[BLE Native] requestEnable falhou:', err?.message);
+      return false;
+    }
   }
 
   _clearReconnectTimer(ch) {
@@ -522,9 +565,16 @@ export class BLEManager extends EventTarget {
     this.hrCharacteristic = await service.getCharacteristic(0x2A37);
 
     await this.hrCharacteristic.startNotifications();
-    this.hrCharacteristic.addEventListener('characteristicvaluechanged', (e) => {
-      this._emit('hr-data', parseHeartRate(e.target.value));
-    });
+
+    // Remove antes de adicionar: _attachHR roda de novo a cada reconexão e o Chrome reusa
+    // o objeto da característica, então os listeners se acumulavam. Depois de N
+    // reconexões cada notificação disparava N eventos hr-data e o recorder contava a
+    // mesma amostra N vezes.
+    if (this._hrListener) {
+      this.hrCharacteristic.removeEventListener('characteristicvaluechanged', this._hrListener);
+    }
+    this._hrListener = (e) => this._emit('hr-data', parseHeartRate(e.target.value));
+    this.hrCharacteristic.addEventListener('characteristicvaluechanged', this._hrListener);
 
     this._hrConnected = true;
     this._hrReconnectAttempt = 0;
@@ -623,12 +673,19 @@ export class BLEManager extends EventTarget {
       this.cadenceParser.reset();
 
       await this.cscCharacteristic.startNotifications();
-      this.cscCharacteristic.addEventListener('characteristicvaluechanged', (e) => {
+
+      // Mesmo cuidado do canal de FC: sem remover o anterior, cada reconexão duplicaria
+      // os eventos de cadência.
+      if (this._cscListener) {
+        this.cscCharacteristic.removeEventListener('characteristicvaluechanged', this._cscListener);
+      }
+      this._cscListener = (e) => {
         const result = this.cadenceParser.parse(e.target.value);
         if (result) {
           this._emit('csc-data', result);
         }
-      });
+      };
+      this.cscCharacteristic.addEventListener('characteristicvaluechanged', this._cscListener);
 
       this._cscConnected = true;
       this._emit('csc-status', 'connected');

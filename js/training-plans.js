@@ -231,10 +231,6 @@ const PREBUILT_PLANS = [
 // ── Storage ──
 const CUSTOM_PLANS_KEY = 'spinsync_custom_plans';
 
-export function getPrebuiltPlans() {
-  return PREBUILT_PLANS;
-}
-
 export function getCustomPlans() {
   // A corrupted value used to throw during app construction and leave a black screen.
   try {

@@ -357,7 +357,7 @@
       <!-- Sensor Cards -->
       <div class="card-title" style="padding: 0 4px; margin-bottom: 10px;">SENSORES</div>
 
-      <div class="sensor-card" id="sensor-hr">
+      <div class="sensor-card">
         <div class="sensor-icon hr">❤️</div>
         <div class="sensor-info">
           <div class="sensor-name" id="hr-device-name">Monitor Cardíaco</div>
@@ -369,7 +369,7 @@
         <button class="sensor-btn connect" id="btn-connect-hr">Conectar</button>
       </div>
 
-      <div class="sensor-card" id="sensor-csc">
+      <div class="sensor-card">
         <div class="sensor-icon csc">⚙️</div>
         <div class="sensor-info">
           <div class="sensor-name" id="csc-device-name">Cadência</div>
@@ -598,7 +598,7 @@
 
       <!-- Perceived effort. The one thing no sensor measures, and the cheapest to collect:
            a single tap while the summary is already on screen. -->
-      <div class="card" id="rpe-card">
+      <div class="card">
         <div class="card-title">Como foi?</div>
         <div class="rpe-scale" id="rpe-scale" role="radiogroup" aria-label="Esforço percebido de 1 a 10"></div>
         <div class="rpe-hint" id="rpe-hint">Toque para avaliar o esforço</div>
@@ -626,6 +626,12 @@
           <div class="subtitle">Seus treinos anteriores</div>
         </div>
       </div>
+
+      <!-- Busca por nome do plano ou pelo texto da anotação: sem isto a nota que você
+           escreve no resumo nunca mais é encontrada. -->
+      <label class="sr-only" for="history-search">Buscar treino</label>
+      <input type="search" id="history-search" class="form-input mb-16"
+             placeholder="Buscar por treino ou anotação" autocomplete="off">
 
       <div class="history-list" id="history-list">
         <!-- Rendered by JS -->
@@ -676,6 +682,9 @@
       </div>
       <!-- Shown only for custom plans (see showPlanDetail) -->
       <div class="mt-8">
+        <button class="btn btn-secondary btn-full btn-sm" id="btn-edit-plan" style="display:none">Editar treino</button>
+      </div>
+      <div class="mt-8">
         <button class="btn btn-danger btn-full btn-sm" id="btn-delete-plan" style="display:none">Excluir treino</button>
       </div>
     </div>
@@ -711,7 +720,7 @@
         </div>
 
         <!-- BPM Target -->
-        <div class="target-row" id="guided-bpm-target">
+        <div class="target-row">
           <span class="target-label">Alvo: <span id="guided-bpm-range">--</span></span>
           <span class="target-badge no_data" id="guided-bpm-badge">--</span>
         </div>
@@ -759,8 +768,11 @@
         </div>
       </div>
 
-      <!-- Controls -->
+      <div class="lap-banner" id="guided-lap-banner" hidden></div>
+
+      <!-- Controls. A volta também serve no guiado: marca um esforço dentro da fase. -->
       <div class="workout-controls">
+        <button class="btn btn-lap" id="btn-guided-lap">🏁 Volta</button>
         <button class="btn btn-pause" id="btn-guided-pause">⏸ Pausar</button>
         <button class="btn btn-stop" id="btn-guided-stop">⏹ Finalizar</button>
       </div>
@@ -784,7 +796,7 @@
     <!-- ════════════════════════════════════════ -->
     <div id="view-plan-creator" class="view">
       <div class="view-header">
-        <h1>Criar Treino</h1>
+        <h1 id="creator-title">Criar Treino</h1>
         <div class="subtitle">Monte seu treino personalizado</div>
       </div>
 
@@ -881,6 +893,15 @@
         <div class="card-title">Gasto Calórico</div>
         <div class="chart-container">
           <canvas id="chart-analytics-calories" role="img" aria-label="Calorias por treino no período selecionado"></canvas>
+        </div>
+      </div>
+
+      <!-- Volume em minutos: o dado já era agregado por analytics.js e nunca desenhado.
+           É a métrica mais direta de um diário de treino. -->
+      <div class="chart-card mt-16" id="analytics-volume-card" hidden>
+        <div class="card-title">Volume (minutos)</div>
+        <div class="chart-container">
+          <canvas id="chart-analytics-volume" role="img" aria-label="Minutos de treino por dia no período selecionado"></canvas>
         </div>
       </div>
 

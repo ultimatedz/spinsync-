@@ -63,16 +63,19 @@ export function getStats(period = 'month') {
   let sumRPM = 0;
   let countRPM = 0;
 
+  // Ponderado por duração, não média de médias: um sprint de 5 min pesava igual a um
+  // endurance de 50, o que fazia o BPM médio do período dizer muito pouco.
   filtered.forEach(w => {
-    totalDuration += (w.durationSeconds || 0);
+    const seconds = w.durationSeconds || 0;
+    totalDuration += seconds;
     totalCalories += (w.calories || 0);
-    if (w.avgBPM) {
-      sumBPM += w.avgBPM;
-      countBPM++;
+    if (w.avgBPM && seconds) {
+      sumBPM += w.avgBPM * seconds;
+      countBPM += seconds;
     }
-    if (w.avgRPM) {
-      sumRPM += w.avgRPM;
-      countRPM++;
+    if (w.avgRPM && seconds) {
+      sumRPM += w.avgRPM * seconds;
+      countRPM += seconds;
     }
   });
 

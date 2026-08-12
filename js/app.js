@@ -125,8 +125,15 @@ class SpinSyncApp {
     });
 
     // Sensor connections
-    document.getElementById('btn-connect-hr')?.addEventListener('click', () => this.connectHR());
-    document.getElementById('btn-connect-csc')?.addEventListener('click', () => this.connectCSC());
+    // O botão muda de função quando o Bluetooth está desligado — ver updateSensorStatus.
+    document.getElementById('btn-connect-hr')?.addEventListener('click', (e) => {
+      if (e.currentTarget.dataset.action === 'enable-bt') this.enableBluetooth('hr');
+      else this.connectHR();
+    });
+    document.getElementById('btn-connect-csc')?.addEventListener('click', (e) => {
+      if (e.currentTarget.dataset.action === 'enable-bt') this.enableBluetooth('csc');
+      else this.connectCSC();
+    });
 
     // Demo toggle
     // Live zone preview while the numbers that drive it are being edited.
@@ -184,6 +191,7 @@ class SpinSyncApp {
 
     // Workout controls
     document.getElementById('btn-lap')?.addEventListener('click', () => this.markLap());
+    document.getElementById('btn-guided-lap')?.addEventListener('click', () => this.markLap());
     document.getElementById('btn-pause')?.addEventListener('click', () => this.togglePause());
     document.getElementById('btn-stop')?.addEventListener('click', () => this.showStopConfirm());
 
@@ -218,6 +226,8 @@ class SpinSyncApp {
 
     // Plan detail
     document.getElementById('btn-start-guided')?.addEventListener('click', () => this.startGuidedWorkout());
+    document.getElementById('history-search')?.addEventListener('input', () => this.renderHistory());
+    document.getElementById('btn-edit-plan')?.addEventListener('click', () => this.editSelectedPlan());
     document.getElementById('btn-delete-plan')?.addEventListener('click', () => this.deleteSelectedPlan());
 
     // Guided workout controls
@@ -1111,12 +1121,29 @@ class SpinSyncApp {
     if (btn) {
       const isConnected = status === 'connected';
       const isReconnecting = status === 'reconnecting' || status === 'stale';
+      // Bluetooth desligado tem uma ação óbvia — ligar. Era só um rótulo, e o app ficava
+      // tentando reconectar em silêncio contra um adaptador desligado.
+      const isBtOff = status === 'bt-off';
       btn.className = `sensor-btn ${isConnected || isReconnecting ? 'disconnect' : 'connect'}`;
-      // Reconnection retries for up to ~2 minutes; the button has to stay live so the
-      // user can call it off instead of watching a dead control.
-      btn.textContent = isConnected ? 'Desconectar' : (isReconnecting ? 'Cancelar' : 'Conectar');
+      btn.textContent = isBtOff ? 'Ligar Bluetooth'
+        : isConnected ? 'Desconectar'
+          : isReconnecting ? 'Cancelar' : 'Conectar';
       btn.disabled = status === 'scanning' || status === 'connecting';
+      btn.dataset.action = isBtOff ? 'enable-bt' : '';
     }
+  }
+
+  /** Pede o Bluetooth e, se o usuário ligar, retoma a conexão do sensor. */
+  async enableBluetooth(kind) {
+    const ble = this.getBLE();
+    if (!ble?.requestBluetooth) return;
+    const on = await ble.requestBluetooth();
+    if (!on) {
+      this.toast('O Bluetooth continua desligado.', 'error');
+      return;
+    }
+    if (kind === 'hr') this.connectHR();
+    else this.connectCSC();
   }
 
   updateSensorUI() {
@@ -1174,9 +1201,6 @@ class SpinSyncApp {
     this.autoPaused = false;
     this.lastPedalAt = Date.now();
     this._persistWarned = false;
-
-    const lapBanner = document.getElementById('lap-banner');
-    if (lapBanner) lapBanner.hidden = true;
 
     // Start tick loop
     this.startTicking(() => this.workoutTick(), 'Treino livre');
@@ -1453,6 +1477,8 @@ class SpinSyncApp {
    */
   startTicking(fn, title) {
     this.stopTicking();
+    // Volta é por sessão: um banner remanescente falaria da sessão anterior.
+    document.querySelectorAll('.lap-banner').forEach(el => { el.hidden = true; });
     this.tickInterval = setInterval(fn, 1000);
     WorkoutService.start(title);
     this._tickOff = WorkoutService.onTick(fn);
@@ -1493,7 +1519,10 @@ class SpinSyncApp {
 
     Haptics.cue('phaseSame');
 
-    const banner = document.getElementById('lap-banner');
+    // O banner é o da view que está no ar — a marcação de volta serve nas duas.
+    const banner = document.getElementById(
+      this.currentView === 'guided' ? 'guided-lap-banner' : 'lap-banner'
+    );
     if (banner) {
       banner.hidden = false;
       const mins = Math.floor(lap.durationSeconds / 60);
@@ -1904,7 +1933,48 @@ class SpinSyncApp {
           }
         }
       });
+
+      this.renderVolumeChart(stats);
     }
+  }
+
+  /** Minutos por dia. O agregado já existia em analytics.js e era descartado. */
+  renderVolumeChart(stats) {
+    const card = document.getElementById('analytics-volume-card');
+    const canvas = document.getElementById('chart-analytics-volume');
+    if (!card || !canvas) return;
+
+    if (this.volumeChart) {
+      this.volumeChart.destroy();
+      this.volumeChart = null;
+    }
+
+    const data = stats.chartData.duration || [];
+    const hasVolume = data.some(v => v > 0);
+    card.hidden = !hasVolume;
+    if (!hasVolume) return;
+
+    this.volumeChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: stats.chartData.labels,
+        datasets: [{
+          label: 'Minutos',
+          data,
+          backgroundColor: '#4FC3F7',
+          borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
   }
 
   /**
@@ -1923,9 +1993,26 @@ class SpinSyncApp {
       toSave.dataPoints = toSave.dataPoints.filter((_, i) => i % step === 0);
     }
 
-    const ok = Storage.saveWorkout(toSave);
+    let ok = Storage.saveWorkout(toSave);
+
+    // Armazenamento cheio era um beco sem saída: o app avisava e o treino de 45 min se
+    // perdia, sem nenhuma ação possível de dentro do app. As amostras são ~90% do peso de
+    // um treino e o resumo (duração, calorias, zonas, FC) sobrevive sem elas — perder os
+    // gráficos é muito melhor que perder a sessão.
     if (!ok) {
-      this.toast('Não foi possível salvar o treino (armazenamento cheio).', 'error', 6000);
+      const stripped = { ...toSave, dataPoints: [], samplesDropped: true };
+      ok = Storage.saveWorkout(stripped);
+      if (ok) {
+        this.viewingSummary = stripped;
+        this.toast(
+          'Armazenamento cheio: o treino foi salvo sem os gráficos. Exporte um backup e apague treinos antigos.',
+          'error', 8000
+        );
+      }
+    }
+
+    if (!ok) {
+      this.toast('Não foi possível salvar o treino (armazenamento cheio).', 'error', 8000);
       return false;
     }
 
@@ -1979,7 +2066,20 @@ class SpinSyncApp {
     const list = document.getElementById('history-list');
     if (!list) return;
 
-    const workouts = Storage.getWorkouts();
+    const query = (document.getElementById('history-search')?.value || '').trim().toLowerCase();
+    const all = Storage.getWorkouts();
+    const workouts = query
+      ? all.filter(w => `${w.planName || ''} ${w.note || ''}`.toLowerCase().includes(query))
+      : all;
+
+    if (query && workouts.length === 0) {
+      list.innerHTML = `
+        <div class="history-empty">
+          <div class="history-empty-icon" aria-hidden="true">🔎</div>
+          <p>Nenhum treino encontrado para "${escapeHtml(query)}".</p>
+        </div>`;
+      return;
+    }
 
     if (workouts.length === 0) {
       list.innerHTML = `
@@ -2217,9 +2317,12 @@ class SpinSyncApp {
 
     this.renderPlanLadderStatus(plan, Storage.getProfile());
 
-    // Custom plans can be deleted; the 12 pre-built ones cannot.
+    // Custom plans can be edited and deleted; the 12 pre-built ones cannot.
+    const isCustom = Plans.isCustomPlan(plan.id);
     const delBtn = document.getElementById('btn-delete-plan');
-    if (delBtn) delBtn.style.display = Plans.isCustomPlan(plan.id) ? '' : 'none';
+    if (delBtn) delBtn.style.display = isCustom ? '' : 'none';
+    const editBtn = document.getElementById('btn-edit-plan');
+    if (editBtn) editBtn.style.display = isCustom ? '' : 'none';
 
     this.showView('plan-detail');
   }
@@ -2819,19 +2922,37 @@ class SpinSyncApp {
 
   // ── Plan Creator ──
 
-  showPlanCreator() {
-    document.getElementById('creator-name').value = '';
-    document.getElementById('creator-emoji').value = '🔥';
-    document.getElementById('creator-desc').value = '';
-    document.getElementById('creator-difficulty').value = 'Iniciante';
+  /**
+   * Abre o criador, em branco ou carregado com um plano existente.
+   *
+   * O storage sempre soube atualizar por id (saveCustomPlan faz upsert), mas não havia
+   * caminho na interface: qualquer ajuste num treino personalizado significava recriá-lo
+   * do zero e apagar o antigo.
+   */
+  showPlanCreator(plan = null) {
+    this.editingPlanId = plan?.id || null;
 
-    this.creatorPhases = [
-      { name: 'Aquecimento', duration: 300, zone: 1, rpmMin: 50, rpmMax: 65 },
-      { name: 'Principal', duration: 600, zone: 2, rpmMin: 65, rpmMax: 80 },
-      { name: 'Volta à Calma', duration: 240, zone: 1, rpmMin: 45, rpmMax: 55 },
-    ];
+    document.getElementById('creator-name').value = plan?.name || '';
+    document.getElementById('creator-emoji').value = plan?.emoji || '🔥';
+    document.getElementById('creator-desc').value = plan?.description || '';
+    document.getElementById('creator-difficulty').value = plan?.difficulty || 'Iniciante';
+
+    const title = document.getElementById('creator-title');
+    if (title) title.textContent = plan ? 'Editar Treino' : 'Criar Treino';
+
+    this.creatorPhases = plan
+      ? plan.phases.map(p => ({ ...p }))
+      : [
+        { name: 'Aquecimento', duration: 300, zone: 1, rpmMin: 50, rpmMax: 65, tip: '' },
+        { name: 'Principal', duration: 600, zone: 2, rpmMin: 65, rpmMax: 80, tip: '' },
+        { name: 'Volta à Calma', duration: 240, zone: 1, rpmMin: 45, rpmMax: 55, tip: '' },
+      ];
     this.renderCreatorPhases();
     this.showView('plan-creator');
+  }
+
+  editSelectedPlan() {
+    if (this.selectedPlan) this.showPlanCreator(this.selectedPlan);
   }
 
   updateCreatorTotal() {
@@ -2879,6 +3000,13 @@ class SpinSyncApp {
             <input type="text" id="phase-${i}-rpm" class="form-input" data-field="rpm" data-idx="${i}" value="${phase.rpmMin}-${phase.rpmMax}" placeholder="60-80">
           </div>
         </div>
+        <div class="form-group" style="margin-bottom:0">
+          <!-- A tela de treino guiado tem um card de dica que ficava permanentemente vazio
+               nos planos personalizados, porque o criador não coletava este campo. -->
+          <label class="form-label-xs" for="phase-${i}-tip">Dica (opcional)</label>
+          <input type="text" id="phase-${i}-tip" class="form-input" data-field="tip" data-idx="${i}"
+                 value="${escapeHtml(phase.tip || '')}" placeholder="Ex: sentado, mão na barra">
+        </div>
       </div>
     `).join('');
 
@@ -2924,6 +3052,7 @@ class SpinSyncApp {
         if (!phase) return;
 
         if (field === 'name') phase.name = input.value;
+        if (field === 'tip') phase.tip = input.value.trim();
         if (field === 'duration') {
           phase.duration = parseInt(input.value) * 60 || 60;
           this.updateCreatorTotal();
@@ -2959,7 +3088,8 @@ class SpinSyncApp {
     }
 
     const plan = {
-      id: 'custom_' + Date.now(),
+      // Preserva o id ao editar, senão salvar viraria sempre uma cópia nova.
+      id: this.editingPlanId || 'custom_' + Date.now(),
       name,
       emoji: document.getElementById('creator-emoji').value || '🔥',
       description: document.getElementById('creator-desc').value || '',
@@ -2969,7 +3099,7 @@ class SpinSyncApp {
     };
 
     if (Plans.saveCustomPlan(plan)) {
-      this.toast('Treino personalizado salvo.', 'success');
+      this.toast(this.editingPlanId ? 'Treino atualizado.' : 'Treino personalizado salvo.', 'success');
     } else {
       this.toast('Não foi possível salvar o treino.', 'error');
     }

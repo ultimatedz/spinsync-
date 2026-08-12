@@ -35,10 +35,6 @@ export function setEnabled(value) {
   enabled = !!value;
 }
 
-export function isEnabled() {
-  return enabled;
-}
-
 /**
  * Fires a cue on both devices. Never throws and never blocks the workout tick.
  * @param {keyof typeof PATTERNS} name

@@ -1,6 +1,7 @@
 package com.spinsync.wear
 
 import android.content.Context
+import android.content.Intent
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
 import androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters
@@ -35,6 +36,7 @@ class SpinSyncTileService : TileService() {
         /** While broadcasting, keep the number roughly current without draining anything. */
         const val FRESHNESS_ACTIVE_MS = 20_000L
         const val ID_CLICK_START = "spinsync_start"
+        const val ID_CLICK_STOP = "spinsync_stop"
     }
 
     override fun onTileResourcesRequest(
@@ -46,6 +48,13 @@ class SpinSyncTileService : TileService() {
     override fun onTileRequest(
         requestParams: RequestBuilders.TileRequest
     ): ListenableFuture<TileBuilders.Tile> {
+        // O clique chega como um novo pedido de tile carregando o id do clicável.
+        if (requestParams.currentState.lastClickableId == ID_CLICK_STOP) {
+            val intent = Intent(this, HrBroadcastService::class.java)
+                .setAction(HrBroadcastService.ACTION_STOP)
+            runCatching { startService(intent) }
+        }
+
         val state = HrState.flow.value
         val deviceParams = requestParams.deviceConfiguration
 
@@ -90,7 +99,7 @@ class SpinSyncTileService : TileService() {
                     .build()
             )
             .setContent(
-                Button.Builder(this, launchAction())
+                Button.Builder(this, if (running) stopAction() else launchAction())
                     .setTextContent(
                         getString(if (running) R.string.btn_stop else R.string.btn_start)
                     )
@@ -101,6 +110,18 @@ class SpinSyncTileService : TileService() {
             )
             .build()
     }
+
+    /**
+     * Para a transmissão de verdade, sem abrir o app.
+     *
+     * O botão dizia "Parar" e só abria a MainActivity — o usuário tocava, o app abria, e
+     * ainda precisava tocar de novo. Parar não precisa de permissão nenhuma, então dá para
+     * fazer direto pelo serviço.
+     */
+    private fun stopAction() = ModifiersBuilders.Clickable.Builder()
+        .setId(ID_CLICK_STOP)
+        .setOnClick(ActionBuilders.LoadAction.Builder().build())
+        .build()
 
     /**
      * Opens the app rather than starting the service directly.

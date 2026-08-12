@@ -196,14 +196,6 @@ export async function syncWorkout(summary) {
 }
 
 /**
- * Get the sync status text for UI display.
- */
-export function getStatusText() {
-  if (!isNative) return 'Disponível apenas no app Android';
-  return 'Health Connect disponível';
-}
-
-/**
  * Check if running in native mode (Capacitor).
  */
 export function isNativeMode() {
