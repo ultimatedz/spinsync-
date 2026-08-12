@@ -55,6 +55,22 @@ export function isLadderPlan(planId) {
 // getMaxHR used to live here as a second copy of `220 - age` with its own fallback. It is
 // now in js/physiology.js, and evaluateSession goes through a ZoneCalculator instead.
 
+/** Marca um degrau como pulado, liberando o próximo. */
+export function skipStep(planId) {
+  const skipped = new Set(Storage.getSettings().skippedSteps || []);
+  skipped.add(planId);
+  Storage.saveSettings({ skippedSteps: [...skipped] });
+}
+
+/** Desfaz todos os pulos — a escada volta a ser derivada só do histórico. */
+export function resetSkipped() {
+  Storage.saveSettings({ skippedSteps: [] });
+}
+
+export function hasSkipped() {
+  return (Storage.getSettings().skippedSteps || []).length > 0;
+}
+
 // ── Session evaluation ───────────────────────────────────────────────────────
 
 /**
@@ -185,6 +201,66 @@ export function evaluateSession(summary, profile) {
  *
  * @returns {{action, title, message, reasons: string[], nextPlanId: string|null}}
  */
+/**
+ * Veredito para plano personalizado.
+ *
+ * Não promove nem bloqueia nada — planos custom estão fora da escada de propósito, porque
+ * não há como calibrar a dificuldade de um plano que o próprio usuário montou. Mas a
+ * avaliação já era calculada por inteiro e descartada: a nota e a aderência dizem se você
+ * segurou o que o SEU plano pediu, e isso vale por si.
+ */
+export function judgeCustom(evaluation) {
+  const reasons = buildReasons(evaluation);
+
+  if (!evaluation.hasHR) {
+    return {
+      action: 'repeat',
+      title: 'Sem frequência cardíaca para avaliar',
+      message: 'Conecte a cinta ou o relógio para eu medir o quanto você segurou as zonas deste treino.',
+      reasons,
+      nextPlanId: null,
+    };
+  }
+
+  if (evaluation.completion < 0.9) {
+    return {
+      action: 'repeat',
+      title: 'Treino não concluído',
+      message: `Você fez ${Math.round(evaluation.completion * 100)}% do que planejou.`,
+      reasons,
+      nextPlanId: null,
+    };
+  }
+
+  if (evaluation.score >= SCORE_STANDOUT) {
+    return {
+      action: 'advance',
+      title: 'Execução muito boa',
+      message: 'Você segurou o que este treino pediu com folga. Se ficou fácil, vale endurecer as fases.',
+      reasons,
+      nextPlanId: null,
+    };
+  }
+
+  if (evaluation.score >= SCORE_QUALIFY) {
+    return {
+      action: 'consolidate',
+      title: 'Boa execução',
+      message: 'Dentro do que o treino pedia, com alguns trechos fora da janela.',
+      reasons,
+      nextPlanId: null,
+    };
+  }
+
+  return {
+    action: 'repeat',
+    title: 'Longe do que o treino pedia',
+    message: 'Boa parte do tempo ficou fora das zonas e cadências que você mesmo definiu — talvez o plano esteja duro demais para agora.',
+    reasons,
+    nextPlanId: null,
+  };
+}
+
 export function judge(evaluation, previousEvaluations = []) {
   // Mesma régua que getLadderState aplica: uma sessão abandonada na metade não conta como
   // evidência prévia. Sem o filtro de completion, o veredito prometia subir e a escada na
@@ -384,12 +460,24 @@ export function getLadderState(profile) {
     };
   });
 
-  // Current step = first not yet cleared. Everything before it is done.
-  const currentIndex = steps.findIndex(s => !s.cleared);
+  // Degraus que o usuário decidiu pular.
+  //
+  // Sem isto a escada podia travar para sempre: quem não conseguisse limpar um degrau
+  // ficava preso nele, sem nenhum caminho de saída no código. Um plano pode simplesmente
+  // não servir para a pessoa — lesão antiga, bike sem carga suficiente, o que for — e o
+  // motor não tinha como saber disso.
+  const skipped = new Set(Storage.getSettings().skippedSteps || []);
+  for (const s of steps) {
+    if (skipped.has(s.planId)) s.skipped = true;
+  }
+
+  // Degrau atual = o primeiro que não foi limpo nem pulado.
+  const currentIndex = steps.findIndex(s => !s.cleared && !s.skipped);
   const current = currentIndex === -1 ? null : steps[currentIndex];
 
   for (const s of steps) {
     s.status = s.cleared ? 'cleared'
+      : s.skipped ? 'skipped'
       : (current && s.index === current.index) ? 'current'
       : 'locked';
   }

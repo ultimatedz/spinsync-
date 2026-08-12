@@ -135,6 +135,8 @@ class SpinSyncApp {
     });
 
     document.getElementById('btn-welcome-start')?.addEventListener('click', () => this.showView('profile'));
+    document.getElementById('btn-skip-step')?.addEventListener('click', () => this.skipCurrentStep());
+    document.getElementById('btn-reset-progression')?.addEventListener('click', () => this.resetProgression());
 
     document.getElementById('demo-toggle')?.addEventListener('change', (e) => this.toggleDemo(e.target.checked));
 
@@ -349,6 +351,7 @@ class SpinSyncApp {
     set('setting-autopause', settings.autoPause);
     set('setting-goal', settings.weeklyGoal, 'value');
     set('setting-wheel', settings.wheelCircumferenceMm, 'value');
+    this.updateProgressionSettings();
     // O modo demo é de sessão, não persistido — mas o interruptor e os banners precisam
     // refletir o estado atual ao entrar no perfil.
     this.updateDemoBanner();
@@ -733,9 +736,71 @@ class SpinSyncApp {
     }
 
     this.renderGoalCard();
+    // Assíncrono: lê do Health Connect, e o card aparece sozinho quando houver dado.
+    this.renderReadiness().catch(() => {});
     this.renderCoachCard();
     this.updateSensorUI();
     this.updateStartButton();
+  }
+
+  /**
+   * Prontidão: o que o relógio mediu dormindo, cruzado com a carga da semana.
+   *
+   * Nenhuma das métricas vale sozinha — o valor absoluto de RMSSD varia enormemente entre
+   * pessoas. O que informa é o desvio em relação à sua própria linha de base, e o
+   * cruzamento: carga subindo com HRV caindo é o padrão que antecede estagnação.
+   */
+  async renderReadiness() {
+    const card = document.getElementById('readiness-card');
+    if (!card) return;
+
+    const recovery = await HealthSync.getRecovery();
+    if (!recovery) { card.hidden = true; return; }
+    card.hidden = false;
+
+    // Desvios percentuais em relação à base. HRV caindo e FC de repouso subindo apontam
+    // para o mesmo lado: recuperação incompleta.
+    const hrvDrop = recovery.hrv && recovery.hrvBaseline
+      ? (recovery.hrvBaseline - recovery.hrv) / recovery.hrvBaseline : 0;
+    const rhrRise = recovery.restingHR && recovery.restingHRBaseline
+      ? recovery.restingHR - recovery.restingHRBaseline : 0;
+    const shortSleep = recovery.sleepHours !== null && recovery.sleepHours < 6;
+
+    const load = Analytics.getTrainingLoad();
+    const loadSpike = load?.ratio >= 1.5;
+
+    let flags = 0;
+    if (hrvDrop > 0.2) flags += 2;
+    else if (hrvDrop > 0.1) flags += 1;
+    if (rhrRise >= 5) flags += 2;
+    else if (rhrRise >= 3) flags += 1;
+    if (shortSleep) flags += 1;
+    if (loadSpike) flags += 1;
+
+    const verdict = flags >= 3 ? 'Recuperação incompleta'
+      : flags >= 1 ? 'Recuperação parcial'
+        : 'Pronto para treinar';
+    const color = flags >= 3 ? 'var(--zone-4)' : flags >= 1 ? 'var(--zone-3)' : 'var(--zone-2)';
+
+    document.getElementById('readiness-verdict').textContent = verdict;
+    document.getElementById('readiness-dot').style.background = color;
+
+    const reasons = [];
+    if (hrvDrop > 0.1) reasons.push(`variabilidade ${Math.round(hrvDrop * 100)}% abaixo da sua média`);
+    if (rhrRise >= 3) reasons.push(`FC de repouso ${rhrRise} bpm acima do normal`);
+    if (shortSleep) reasons.push(`${recovery.sleepHours} h de sono`);
+    if (loadSpike) reasons.push(`carga da semana ${load.ratio}× a média`);
+
+    document.getElementById('readiness-text').textContent = reasons.length
+      ? `${reasons.join(', ')}. ${flags >= 3 ? 'Considere um treino leve hoje.' : 'Dá para treinar, sem forçar o topo.'}`
+      : 'Sinais noturnos dentro da sua média.';
+
+    // Valores vêm do Health Connect como números, então não passam por escapeHtml.
+    const metrics = [];
+    if (recovery.hrv) metrics.push(`<span>HRV <strong>${recovery.hrv} ms</strong></span>`);
+    if (recovery.restingHR) metrics.push(`<span>Repouso <strong>${recovery.restingHR} bpm</strong></span>`);
+    if (recovery.sleepHours !== null) metrics.push(`<span>Sono <strong>${recovery.sleepHours} h</strong></span>`);
+    document.getElementById('readiness-metrics').innerHTML = metrics.join('');
   }
 
   /**
@@ -821,15 +886,22 @@ class SpinSyncApp {
     const profile = Storage.getProfile();
     const evaluation = summary?.planId ? Progression.evaluateSession(summary, profile) : null;
 
-    if (!evaluation || !Progression.isLadderPlan(summary.planId)) {
+    if (!evaluation) {
       card.hidden = true;
       return;
     }
 
+    // Planos personalizados eram avaliados por completo e o resultado jogado fora aqui.
+    // Eles não têm lugar na escada — não são calibrados — mas a nota e a aderência valem
+    // igual: dizem se você segurou o que o SEU plano pediu.
+    const onLadder = Progression.isLadderPlan(summary.planId);
+
     // Only sessions *before* this one count as prior evidence.
     const previous = Progression.getSessionsFor(summary.planId, profile)
       .filter(e => e.date !== summary.date);
-    const verdict = Progression.judge(evaluation, previous);
+    const verdict = onLadder
+      ? Progression.judge(evaluation, previous)
+      : Progression.judgeCustom(evaluation);
 
     card.hidden = false;
     card.className = `verdict-card ${verdict.action}`;
@@ -1889,7 +1961,8 @@ class SpinSyncApp {
       title: isLive ? 'Descartar treino?' : 'Excluir treino?',
       text: isLive
         ? 'Este treino já foi salvo no histórico. Descartar vai apagá-lo definitivamente.'
-        : 'Este treino será removido do histórico definitivamente.',
+        : 'Este treino será removido do histórico definitivamente.'
+          + ' Se ele contava para a escada de progressão, você pode regredir um degrau.',
       confirmLabel: isLive ? 'Descartar' : 'Excluir'
     });
     if (!confirmed) return;
@@ -1961,7 +2034,10 @@ class SpinSyncApp {
         const id = btn.dataset.deleteId;
         const confirmed = await this.confirm({
           title: 'Excluir treino?',
-          text: 'Este treino será removido do histórico definitivamente.',
+          // A escada é derivada do histórico, então excluir pode fazer regredir — isso
+          // acontecia sem nenhum aviso.
+          text: 'Este treino será removido do histórico definitivamente.'
+            + ' Se ele contava para a escada de progressão, você pode regredir um degrau.',
           confirmLabel: 'Excluir'
         });
         if (!confirmed) return;
@@ -2169,11 +2245,55 @@ class SpinSyncApp {
         ? `▶ Este treino começa aqui · ${position}`
         : `▶ Você está aqui · ${position} · melhor nota ${step.bestScore}/100`,
       locked: `🔒 ${position} · conclua os anteriores primeiro`,
+      skipped: `⤼ Pulado · ${position}`,
     };
 
     el.hidden = false;
     el.className = `plan-ladder-status ${step.status}`;
     el.textContent = labels[step.status];
+
+    // Saída para um degrau que não sai. Um plano pode simplesmente não servir para a
+    // pessoa, e sem isto a escada travava nele para sempre.
+    const skipBtn = document.getElementById('btn-skip-step');
+    if (skipBtn) {
+      const canSkip = step.status === 'current' && step.attempts >= 2;
+      skipBtn.hidden = !canSkip;
+      this._skipStepPlanId = canSkip ? plan.id : null;
+    }
+  }
+
+  async skipCurrentStep() {
+    if (!this._skipStepPlanId) return;
+    const ok = await this.confirm({
+      title: 'Pular este degrau?',
+      text: 'O próximo treino da escada é liberado. Você pode desfazer em Perfil › Progressão.',
+      confirmLabel: 'Pular',
+      danger: false,
+    });
+    if (!ok) return;
+
+    Progression.skipStep(this._skipStepPlanId);
+    this.toast('Degrau pulado. O próximo treino foi liberado.', 'success');
+    this.showPlanDetail(this.selectedPlan);
+    this.renderCoachCard();
+  }
+
+  async resetProgression() {
+    const ok = await this.confirm({
+      title: 'Refazer a escada?',
+      text: 'Os degraus pulados voltam a contar. Seu histórico de treinos não é afetado.',
+      confirmLabel: 'Refazer',
+    });
+    if (!ok) return;
+    Progression.resetSkipped();
+    this.toast('Escada recalculada a partir do seu histórico.', 'success');
+    this.updateProgressionSettings();
+    this.renderCoachCard();
+  }
+
+  updateProgressionSettings() {
+    const row = document.getElementById('progression-reset-row');
+    if (row) row.hidden = !Progression.hasSkipped();
   }
 
   async deleteSelectedPlan() {

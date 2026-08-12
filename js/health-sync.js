@@ -57,7 +57,10 @@ export async function requestAuth() {
   if (!isNative || !HealthPlugin) return false;
   try {
     const result = await HealthPlugin.requestAuthorization({
-      read: [],
+      // Leitura: o relógio já mede tudo isto toda noite e escreve no Health Connect. É de
+      // longe o caminho mais barato para prontidão — o Health Services não expõe intervalos
+      // R-R para apps de terceiros, então medir HRV por conta exigiria uma cinta peitoral.
+      read: ['heartRateVariability', 'restingHeartRate', 'sleep'],
       write: ['heartRate', 'calories', 'totalCalories', 'workouts']
     });
     const hasWrite = result.writeAuthorized && result.writeAuthorized.length > 0;
@@ -205,4 +208,79 @@ export function getStatusText() {
  */
 export function isNativeMode() {
   return isNative;
+}
+
+// ── Leitura de recuperação ───────────────────────────────────────────────────
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Lê amostras de um tipo, devolvendo [] em qualquer falha — nada aqui é essencial. */
+async function readSamples(dataType, days, limit = 100) {
+  if (!isNative || !HealthPlugin) return [];
+  try {
+    const res = await HealthPlugin.readSamples({
+      dataType,
+      startDate: new Date(Date.now() - days * DAY_MS).toISOString(),
+      endDate: new Date().toISOString(),
+      limit,
+    });
+    return res?.samples || [];
+  } catch (e) {
+    // Permissão não concedida ou tipo não suportado pela fonte. Não é erro do app.
+    console.log(`[HealthSync] leitura de ${dataType} indisponível:`, e?.message);
+    return [];
+  }
+}
+
+const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+
+/**
+ * Sinais de recuperação medidos pelo relógio durante a noite.
+ *
+ * Cada métrica é comparada com a linha de base das últimas semanas, porque o valor
+ * absoluto não diz nada: um RMSSD de 40 ms é ótimo para uns e ruim para outros. O que
+ * informa é o desvio em relação a você mesmo.
+ *
+ * @returns {Promise<null|object>} null quando não há dado nenhum — o card some.
+ */
+export async function getRecovery() {
+  if (!isNative || !HealthPlugin) return null;
+
+  const [hrvSamples, rhrSamples, sleepSamples] = await Promise.all([
+    readSamples('heartRateVariability', 30),
+    readSamples('restingHeartRate', 30),
+    readSamples('sleep', 2, 20),
+  ]);
+
+  const recent = (samples, days) => {
+    const cutoff = Date.now() - days * DAY_MS;
+    return samples.filter(s => new Date(s.startDate).getTime() >= cutoff).map(s => s.value);
+  };
+
+  // Base de 30 dias excluindo os últimos 2, para o valor recente não se comparar consigo.
+  const baseline = (samples) => {
+    const cutoff = Date.now() - 2 * DAY_MS;
+    return mean(samples.filter(s => new Date(s.startDate).getTime() < cutoff).map(s => s.value));
+  };
+
+  const hrvNow = mean(recent(hrvSamples, 2));
+  const hrvBase = baseline(hrvSamples);
+  const rhrNow = mean(recent(rhrSamples, 2));
+  const rhrBase = baseline(rhrSamples);
+
+  // O sono vem em blocos; somar a duração dá as horas da última noite.
+  const sleepHours = sleepSamples.length
+    ? Math.round(sleepSamples.reduce((sum, s) =>
+        sum + (new Date(s.endDate) - new Date(s.startDate)), 0) / 3600000 * 10) / 10
+    : null;
+
+  if (hrvNow === null && rhrNow === null && sleepHours === null) return null;
+
+  return {
+    hrv: hrvNow === null ? null : Math.round(hrvNow),
+    hrvBaseline: hrvBase === null ? null : Math.round(hrvBase),
+    restingHR: rhrNow === null ? null : Math.round(rhrNow),
+    restingHRBaseline: rhrBase === null ? null : Math.round(rhrBase),
+    sleepHours,
+  };
 }

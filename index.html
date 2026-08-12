@@ -242,6 +242,14 @@
         <!-- Ferramenta de desenvolvimento, não preferência de treino: fica separada, no fim,
              e fora da home — lá ocupava o lugar mais nobre do app e era fácil de ligar sem
              querer. -->
+        <div class="setting-row mt-16" id="progression-reset-row" hidden>
+          <div class="setting-info">
+            <div class="setting-name">Progressão</div>
+            <div class="setting-desc">Você pulou um ou mais degraus da escada.</div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-progression">Refazer</button>
+        </div>
+
         <hr class="setting-divider">
         <div class="setting-row">
           <div class="setting-info">
@@ -317,6 +325,17 @@
           <div class="goal-streak-value" id="goal-streak-value">0</div>
           <div class="goal-streak-label">semanas</div>
         </div>
+      </div>
+
+      <!-- Prontidão: o que o relógio mediu dormindo, cruzado com a carga da semana.
+           Some inteiro quando o Health Connect não tem nada — nem todo aparelho sincroniza. -->
+      <div class="readiness-card" id="readiness-card" hidden>
+        <div class="readiness-head">
+          <span class="readiness-verdict" id="readiness-verdict"></span>
+          <span class="readiness-dot" id="readiness-dot"></span>
+        </div>
+        <div class="readiness-text" id="readiness-text"></div>
+        <div class="readiness-metrics" id="readiness-metrics"></div>
       </div>
 
       <!-- Coach: where you are on the ladder and what comes next -->
@@ -646,6 +665,12 @@
       <button class="btn btn-primary btn-full btn-lg" id="btn-start-guided">
         ▶ INICIAR ESTE TREINO
       </button>
+      <!-- Só depois de duas tentativas: pular sem ter tentado esvazia a escada. -->
+      <div class="mt-8">
+        <button class="btn btn-secondary btn-full btn-sm" id="btn-skip-step" hidden>
+          Pular este degrau
+        </button>
+      </div>
       <div class="mt-8">
         <button class="btn btn-secondary btn-full btn-sm" data-back="home">← Voltar</button>
       </div>

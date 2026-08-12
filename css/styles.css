@@ -1787,6 +1787,9 @@ body {
 }
 
 .ladder-pip.cleared { background: var(--success); }
+/* Pulado: contado como resolvido para a escada andar, mas visualmente distinto de
+   concluído — não é a mesma coisa e a tela não deve fingir que é. */
+.ladder-pip.skipped { background: var(--accent-purple); opacity: 0.55; }
 .ladder-pip.current {
   background: var(--text-accent);
   box-shadow: 0 0 8px rgba(88, 166, 255, .6);
@@ -1806,6 +1809,7 @@ body {
 .plan-ladder-status.cleared { background: rgba(63, 185, 80, .14); color: var(--success); }
 .plan-ladder-status.current { background: rgba(88, 166, 255, .14); color: var(--text-accent); }
 .plan-ladder-status.locked  { background: var(--bg-elevated); color: var(--text-secondary); }
+.plan-ladder-status.skipped { background: rgba(124,77,255,.15); color: var(--accent-purple-text); }
 
 /* ════════════════════════════════════════════════════════
    POST-WORKOUT VERDICT
@@ -2103,6 +2107,55 @@ body {
   font-size: 0.7rem;
   color: var(--text-secondary);
   margin-bottom: 4px;
+}
+
+/* ── Prontidão ── */
+.readiness-card {
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.readiness-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.readiness-verdict {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.readiness-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.readiness-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.readiness-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.readiness-metrics strong {
+  color: var(--text-primary);
+  font-weight: 700;
 }
 
 /* ── Carga de treino ── */
