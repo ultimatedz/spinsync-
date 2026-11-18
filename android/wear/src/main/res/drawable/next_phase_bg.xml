@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tinted pill behind the next-phase warning. The tint colour is swapped at runtime in
+     MainActivity so the direction of the change (harder / easier) reads at a glance. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="10dp" />
+    <solid android:color="@color/next_phase_tint" />
+</shape>

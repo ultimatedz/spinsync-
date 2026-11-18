@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Heart glyph on the adaptive-icon 108dp canvas (safe zone = centre 72dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#EF5350"
+        android:pathData="M54,78.5 L49.6,74.5 C36.4,62.6 27.7,54.7 27.7,45.1 C27.7,37.2 33.9,31 41.8,31 C46.3,31 50.6,33.1 53.4,36.4 L54,37.1 L54.6,36.4 C57.4,33.1 61.7,31 66.2,31 C74.1,31 80.3,37.2 80.3,45.1 C80.3,54.7 71.6,62.6 58.4,74.5 Z" />
+</vector>

@@ -1,0 +1,41 @@
+{
+  "name": "projeto_treino",
+  "version": "1.0.0",
+  "description": "",
+  "main": "sw.js",
+  "scripts": {
+    "vendor:sync": "node scripts/sync-vendor.mjs",
+    "icons": "node scripts/gen-icons.mjs",
+    "vendor:check": "node scripts/check-vendor.mjs",
+    "build:web": "npm run vendor:sync && npm run vendor:check && npm run icons && node scripts/build-web.mjs",
+    "cap:sync": "npm run build:web && npx cap sync android",
+    "cap:open": "npx cap open android",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "patch-package && node scripts/sync-vendor.mjs && node scripts/gen-icons.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ultimatedz/spinsync-.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ultimatedz/spinsync-/issues"
+  },
+  "homepage": "https://github.com/ultimatedz/spinsync-#readme",
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.1.3",
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/cli": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capgo/capacitor-health": "^8.4.8",
+    "chart.js": "4.4.7"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
+  }
+}

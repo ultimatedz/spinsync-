@@ -1,0 +1,10 @@
+include ':app'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+// SpinSync HR — Wear OS companion (standalone watch APK, not bundled into :app).
+// Safe here: `npx cap sync android` only regenerates capacitor.settings.gradle,
+// app/capacitor.build.gradle and app/src/main/assets/, never this file.
+include ':wear'
+
+apply from: 'capacitor.settings.gradle'
