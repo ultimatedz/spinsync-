@@ -42,28 +42,47 @@ public class WorkoutForegroundService extends Service {
 
     private PowerManager.WakeLock wakeLock;
 
+    /** Verdadeiro entre um startForeground bem-sucedido e o onDestroy. Lido pelo plugin. */
+    private static volatile boolean running = false;
+
+    static boolean isRunning() {
+        return running;
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
     }
 
+    /**
+     * Toda parada pedida pelo app usa stopSelf(startId), nunca stopSelf() puro. (As únicas
+     * exceções são as que o próprio sistema ordena — ver forceStop.)
+     *
+     * Era isto que fechava o app ao iniciar um treino. O JS pedia stop e start em
+     * sequência; o stop criava o serviço, e o stopSelf() sem id derrubava o serviço com o
+     * startForegroundService() do start ainda pendente. O sistema trata isso como promessa
+     * de foreground quebrada e mata o processo com ForegroundServiceDidNotStartInTimeException
+     * ("Bringing down service while still waiting for start foreground" no logcat).
+     *
+     * stopSelf(startId) só para quando aquele é o pedido mais recente: com um start na fila,
+     * a parada é ignorada e o start seguinte sobe o foreground normalmente.
+     */
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            shutdown();
+            shutdown(startId);
             return START_NOT_STICKY;
         }
 
         createChannel();
-        try {
-            ServiceCompat.startForeground(this, NOTIF_ID, WorkoutNotification.build(this), resolveType());
-        } catch (Exception e) {
-            // Tipo de serviço sem o pré-requisito satisfeito, ou start negado pelo sistema.
-            // Nunca pode derrubar o treino: o JS segue gravando enquanto o processo viver.
-            Log.e(TAG, "startForeground falhou", e);
-            stopSelf();
+        if (!goForeground(resolveType())) {
+            // A recusa vem de dentro do próprio startForeground, que já conta como resposta
+            // ao startForegroundService() — parar aqui não derruba o processo. O JS segue
+            // gravando enquanto o processo viver, só sem a proteção do foreground.
+            shutdown(startId);
             return START_NOT_STICKY;
         }
+        running = true;
         acquireWakeLock();
 
         // START_NOT_STICKY de propósito: se o processo morrer, a WebView que grava morre
@@ -94,11 +113,39 @@ public class WorkoutForegroundService extends Service {
                 : ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
     }
 
-    /** Android 14+ chama isto quando um serviço de tempo limitado estoura a cota. */
+    /**
+     * Sobe o foreground, com dataSync de reserva se connectedDevice for recusado (fabricante
+     * que exige outro pré-requisito, permissão revogada entre a checagem e a chamada).
+     */
+    private boolean goForeground(int type) {
+        try {
+            ServiceCompat.startForeground(this, NOTIF_ID, WorkoutNotification.build(this), type);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "startForeground falhou (tipo " + type + ")", e);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && type != ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) {
+            try {
+                ServiceCompat.startForeground(this, NOTIF_ID, WorkoutNotification.build(this),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "startForeground falhou também como dataSync", e);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Android 15+ chama isto quando o tipo dataSync estoura a cota diária (6 h). O sistema
+     * exige a parada em segundos, então aqui ela é incondicional — esperar por um start
+     * pendente trocaria um crash por outro.
+     */
     @Override
     public void onTimeout(int startId) {
         Log.w(TAG, "foreground service atingiu o limite de tempo");
-        shutdown();
+        forceStop();
     }
 
     @Override
@@ -109,20 +156,35 @@ public class WorkoutForegroundService extends Service {
     /** Deslizar o app para fora dos recentes encerra o treino junto. */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        shutdown();
+        // O sistema está encerrando a tarefa: não há start legítimo na fila a preservar.
+        forceStop();
         super.onTaskRemoved(rootIntent);
+    }
+
+    private void forceStop() {
+        running = false;
+        releaseWakeLock();
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        stopSelf();
     }
 
     @Override
     public void onDestroy() {
+        running = false;
         releaseWakeLock();
         super.onDestroy();
     }
 
-    private void shutdown() {
-        releaseWakeLock();
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
-        stopSelf();
+    /** Ver o comentário de onStartCommand: o startId é o que torna a parada segura. */
+    private void shutdown(int startId) {
+        // A notificação e o lock só saem se a parada valer de fato. Com um start pendente,
+        // stopSelf(startId) devolve false e o serviço continua — sem notificação e sem lock
+        // ele estaria rodando "invisível" até o próximo onStartCommand.
+        if (stopSelfResult(startId)) {
+            running = false;
+            releaseWakeLock();
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        }
     }
 
     private void acquireWakeLock() {

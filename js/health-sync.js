@@ -6,8 +6,13 @@
  * Falls back gracefully to no-op when running as a PWA in browser.
  */
 
+import { restingKcal } from './calorie-calculator.js';
+
 let HealthPlugin = null;
 let isNative = false;
+
+/** O que o app escreve ao fim de cada treino. Uma lista só, para pedido e consulta. */
+const WRITE_TYPES = ['heartRate', 'calories', 'totalCalories', 'workouts'];
 
 /**
  * Initialize the health sync module.
@@ -61,7 +66,7 @@ export async function requestAuth() {
       // longe o caminho mais barato para prontidão — o Health Services não expõe intervalos
       // R-R para apps de terceiros, então medir HRV por conta exigiria uma cinta peitoral.
       read: ['heartRateVariability', 'restingHeartRate', 'sleep'],
-      write: ['heartRate', 'calories', 'totalCalories', 'workouts']
+      write: WRITE_TYPES
     });
     const hasWrite = result.writeAuthorized && result.writeAuthorized.length > 0;
     console.log('[HealthSync] Authorization result:', result);
@@ -93,9 +98,13 @@ export async function syncWorkout(summary) {
       return { success: false, error: 'Health Connect not available on this device' };
     }
 
-    const authorized = await requestAuth();
-    if (!authorized) {
-      return { success: false, error: 'Health Connect permission denied' };
+    // Só consulta — nunca pede. requestAuth() aqui abria a tela de permissões do Health
+    // Connect por cima do resumo, logo depois de "Finalizar", a cada treino em que faltasse
+    // qualquer uma das permissões (inclusive as de LEITURA, que nem são usadas aqui). Para
+    // quem estava na bike, era o app "saindo sozinho". Autorizar é no card do perfil.
+    const granted = await grantedWriteTypes();
+    if (granted.size === 0) {
+      return { success: false, skipped: true, error: 'Health Connect not authorized' };
     }
 
     const startDate = summary.date; // ISO string
@@ -104,7 +113,7 @@ export async function syncWorkout(summary) {
     const endDate = new Date(endMs).toISOString();
 
     // 1. Write heart rate samples (sampled to max ~60 points)
-    if (summary.dataPoints && summary.dataPoints.length > 0) {
+    if (granted.has('heartRate') && summary.dataPoints && summary.dataPoints.length > 0) {
       const hrPoints = summary.dataPoints.filter(dp => dp.bpm > 0);
       
       // Sample to max 60 points to avoid excessive writes
@@ -133,7 +142,7 @@ export async function syncWorkout(summary) {
     }
 
     // 2. Write calories (both Active and Total for maximum compatibility)
-    if (summary.calories > 0) {
+    if (summary.calories > 0 && granted.has('calories')) {
       // Active Calories (used by some apps like Samsung Health)
       try {
         await HealthPlugin.saveSample({
@@ -147,17 +156,23 @@ export async function syncWorkout(summary) {
       } catch (e) {
         console.warn('[HealthSync] Active calories write failed:', e);
       }
+    }
 
-      // Total Calories (used by Google Fit and Health Connect UI)
+    if (summary.calories > 0 && granted.has('totalCalories')) {
+      // Total = ativas + basal do intervalo. Era gravado o valor ATIVO aqui também, o que
+      // subnotificava o total e deixava os dois registros idênticos.
+      const totalKcal = Math.round(
+        summary.calories + restingKcal(summary.profile, summary.durationSeconds / 60)
+      );
       try {
         await HealthPlugin.saveSample({
           dataType: 'totalCalories',
-          value: summary.calories,
+          value: totalKcal,
           unit: 'kilocalorie',
           startDate: startDate,
           endDate: endDate
         });
-        console.log(`[HealthSync] Wrote ${summary.calories} total kcal`);
+        console.log(`[HealthSync] Wrote ${totalKcal} total kcal`);
       } catch (e) {
         console.warn('[HealthSync] Total calories write failed:', e);
       }
@@ -170,20 +185,22 @@ export async function syncWorkout(summary) {
     // records written above over the same interval, which is how the platform links them.
     // ('totalEnergyBurned' and 'sourceName' used to be sent here and were silently
     // discarded by the patched Kotlin, which read only workoutType and title.)
-    try {
-      await HealthPlugin.saveSample({
-        dataType: 'workouts',
-        value: summary.durationSeconds,
-        startDate: startDate,
-        endDate: endDate,
-        metadata: {
-          'workoutType': 'bikingStationary',
-          'title': summary.planName || 'SpinSync - Treino Indoor'
-        }
-      });
-      console.log('[HealthSync] Wrote bikingStationary workout session');
-    } catch (e) {
-      console.warn('[HealthSync] Workout session write failed:', e);
+    if (granted.has('workouts')) {
+      try {
+        await HealthPlugin.saveSample({
+          dataType: 'workouts',
+          value: summary.durationSeconds,
+          startDate: startDate,
+          endDate: endDate,
+          metadata: {
+            'workoutType': 'bikingStationary',
+            'title': summary.planName || 'SpinSync - Treino Indoor'
+          }
+        });
+        console.log('[HealthSync] Wrote bikingStationary workout session');
+      } catch (e) {
+        console.warn('[HealthSync] Workout session write failed:', e);
+      }
     }
 
     console.log('[HealthSync] Workout sync complete!');
@@ -192,6 +209,17 @@ export async function syncWorkout(summary) {
   } catch (e) {
     console.error('[HealthSync] syncWorkout error:', e);
     return { success: false, error: e.message || 'Unknown error' };
+  }
+}
+
+/** Tipos de escrita já concedidos, sem abrir UI nenhuma. Vazio em qualquer falha. */
+async function grantedWriteTypes() {
+  try {
+    const status = await HealthPlugin.checkAuthorization({ write: WRITE_TYPES });
+    return new Set(status?.writeAuthorized || []);
+  } catch (e) {
+    console.warn('[HealthSync] checkAuthorization error:', e);
+    return new Set();
   }
 }
 
@@ -260,11 +288,7 @@ export async function getRecovery() {
   const rhrNow = mean(recent(rhrSamples, 2));
   const rhrBase = baseline(rhrSamples);
 
-  // O sono vem em blocos; somar a duração dá as horas da última noite.
-  const sleepHours = sleepSamples.length
-    ? Math.round(sleepSamples.reduce((sum, s) =>
-        sum + (new Date(s.endDate) - new Date(s.startDate)), 0) / 3600000 * 10) / 10
-    : null;
+  const sleepHours = sleepHoursLast24h(sleepSamples);
 
   if (hrvNow === null && rhrNow === null && sleepHours === null) return null;
 
@@ -275,4 +299,43 @@ export async function getRecovery() {
     restingHRBaseline: rhrBase === null ? null : Math.round(rhrBase),
     sleepHours,
   };
+}
+
+/**
+ * Horas dormidas nas últimas 24 h — na prática, a última noite (mais um cochilo, se houve).
+ *
+ * A versão anterior somava todas as sessões de sono das últimas 48 h, ou seja, quase sempre
+ * DUAS noites: ~14 h, e o alerta de sono curto (< 6 h) praticamente nunca disparava. Os
+ * intervalos são unidos antes de somar porque mais de uma fonte (Samsung Health, outro app)
+ * pode gravar a mesma noite, e somá-las dobraria o número.
+ *
+ * @param {Array<{startDate: string, endDate: string}>} samples
+ * @param {number} [now] epoch ms — injetável para teste
+ * @returns {number|null} null quando não há sono registrado na janela (relógio fora do pulso
+ *   à noite não é "0 h de sono")
+ */
+export function sleepHoursLast24h(samples, now = Date.now()) {
+  const windowStart = now - DAY_MS;
+  const intervals = (samples || [])
+    .map(s => [
+      Math.max(windowStart, new Date(s.startDate).getTime()),
+      Math.min(now, new Date(s.endDate).getTime()),
+    ])
+    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
+    .sort((x, y) => x[0] - y[0]);
+  if (intervals.length === 0) return null;
+
+  let totalMs = 0;
+  let [curStart, curEnd] = intervals[0];
+  for (const [a, b] of intervals.slice(1)) {
+    if (a <= curEnd) {
+      curEnd = Math.max(curEnd, b);
+    } else {
+      totalMs += curEnd - curStart;
+      [curStart, curEnd] = [a, b];
+    }
+  }
+  totalMs += curEnd - curStart;
+
+  return Math.round(totalMs / 3600000 * 10) / 10;
 }

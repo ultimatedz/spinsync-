@@ -411,7 +411,7 @@ export function getNextPlanId(planId) {
 
 /** All evaluated sessions for a plan, newest first. */
 export function getSessionsFor(planId, profile) {
-  return Storage.getWorkouts().filter(w => !w.demo)
+  return Storage.getWorkouts().filter(Storage.countsAsTraining)
     .filter(w => w.planId === planId)
     .map(w => evaluateSession(w, profile))
     .filter(Boolean);
@@ -425,8 +425,9 @@ export function getSessionsFor(planId, profile) {
  * never disagree.
  */
 export function getLadderState(profile) {
-  // Sessões do simulador não podem limpar degrau.
-  const workouts = Storage.getWorkouts().filter(w => !w.demo);
+  // Sessões do simulador não podem limpar degrau. As curtas demais também não contam como
+  // tentativa: dois inícios acidentais de 10 s liberavam o botão de pular o degrau.
+  const workouts = Storage.getWorkouts().filter(Storage.countsAsTraining);
   const byPlan = new Map();
 
   for (const w of workouts) {

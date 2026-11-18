@@ -120,7 +120,12 @@ class HrBroadcastService : LifecycleService() {
 
         if (intent?.action == ACTION_STOP) {
             stopBroadcasting()
-            stopSelf()
+            // stopSelf(startId), não stopSelf(): com um START ainda na fila (Parar e Iniciar
+            // tocados em sequência, ou o tile), o stopSelf() puro derrubaria o serviço antes
+            // do startForeground e o sistema mataria o app com
+            // ForegroundServiceDidNotStartInTimeException — o mesmo crash que fechava o
+            // celular ao iniciar um treino. Com o id, a parada só vale se for o último pedido.
+            stopSelf(startId)
             return START_NOT_STICKY
         }
 
@@ -145,16 +150,30 @@ class HrBroadcastService : LifecycleService() {
         HrState.update { it.copy(status = BroadcastStatus.STARTING, bpm = 0, subscribers = 0) }
 
         createChannel()
-        ServiceCompat.startForeground(
-            this,
-            NOTIF_ID,
-            buildNotification(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
-            } else {
-                0
-            },
-        )
+        // O tipo health exige, além de FOREGROUND_SERVICE_HEALTH, uma permissão de sensor
+        // concedida em runtime. Se ela foi revogada — ou se o START_STICKY ressuscitou o
+        // serviço em segundo plano — startForeground lança SecurityException, e sem este
+        // catch o app do relógio fechava no meio do treino.
+        val foreground = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIF_ID,
+                buildNotification(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+                } else {
+                    0
+                },
+            )
+        }
+        if (foreground.isFailure) {
+            Log.e(LOG_TAG, "startForeground recusado", foreground.exceptionOrNull())
+            running = false
+            HrState.update { it.copy(status = BroadcastStatus.ERROR_PERMISSION) }
+            requestTileUpdate(this)
+            stopSelf()
+            return
+        }
 
         acquireWakeLock()
         registerReceiver(btStateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))

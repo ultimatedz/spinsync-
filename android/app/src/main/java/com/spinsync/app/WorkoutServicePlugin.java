@@ -1,6 +1,7 @@
 package com.spinsync.app;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Handler;
@@ -54,6 +55,15 @@ public class WorkoutServicePlugin extends Plugin {
     private long lastDiagAt = 0;
     private long ticks = 0;
 
+    /**
+     * O que o JS pediu por último: start (true) ou stop (false).
+     *
+     * O start pode ficar suspenso no diálogo de permissão de notificação; se o treino for
+     * encerrado nesse meio-tempo, o callback não pode ressuscitar o serviço de uma sessão
+     * que já acabou — ele ficaria segurando a CPU acordada por horas.
+     */
+    private volatile boolean wanted = false;
+
     private final Runnable heartbeat = new Runnable() {
         @Override
         public void run() {
@@ -72,6 +82,7 @@ public class WorkoutServicePlugin extends Plugin {
 
     @PluginMethod
     public void start(PluginCall call) {
+        wanted = true;
         // Pedido só agora, no primeiro treino: no boot o diálogo não tem contexto e é negado
         // por reflexo — e duas recusas fazem o Android parar de exibi-lo.
         if (Build.VERSION.SDK_INT >= 33 && getPermissionState("notifications") != PermissionState.GRANTED) {
@@ -84,15 +95,19 @@ public class WorkoutServicePlugin extends Plugin {
     /** Negar não impede nada: o serviço roda, só a notificação fica invisível. */
     @PermissionCallback
     private void afterNotificationPermission(PluginCall call) {
+        if (!wanted) {
+            call.resolve(new JSObject().put("started", false).put("reason", "stopped"));
+            return;
+        }
         reallyStart(call);
     }
 
     private void reallyStart(PluginCall call) {
         WorkoutForegroundService.WorkoutNotification.set(call.getString("title", "Treino"), null);
 
+        Context app = getContext().getApplicationContext();
         try {
-            ContextCompat.startForegroundService(getContext(),
-                    new Intent(getContext(), WorkoutForegroundService.class));
+            ContextCompat.startForegroundService(app, new Intent(app, WorkoutForegroundService.class));
         } catch (Exception e) {
             // ForegroundServiceStartNotAllowedException (Android 12+) quando o start parte do
             // background. Não é fatal: o treino continua enquanto o processo viver.
@@ -120,20 +135,45 @@ public class WorkoutServicePlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         stopHeartbeat();
-        Intent intent = new Intent(getContext(), WorkoutForegroundService.class);
-        intent.setAction(WorkoutForegroundService.ACTION_STOP);
-        try {
-            getContext().startService(intent);
-        } catch (Exception e) {
-            Log.w(TAG, "stop do serviço falhou", e);
-        }
+        requestServiceStop();
         call.resolve();
     }
 
+    /**
+     * A WebView que grava morre com a Activity. Um serviço sobrevivendo a ela seguraria a CPU
+     * e uma notificação "gravando" de um treino que ninguém mais está gravando — a sessão
+     * volta pelo modal de recuperação, que lê o estado salvo.
+     */
     @Override
     protected void handleOnDestroy() {
         stopHeartbeat();
+        requestServiceStop();
         super.handleOnDestroy();
+    }
+
+    /**
+     * A parada vai como intent para o próprio serviço, nunca por stopService(): o serviço a
+     * processa em ordem com os starts e usa stopSelf(startId), o que torna seguro um stop
+     * que chega com um start ainda em voo (ver WorkoutForegroundService.onStartCommand).
+     *
+     * Sem serviço vivo e sem start pedido não há o que parar — e mandar o intent assim mesmo
+     * criaria o serviço só para ele se desligar.
+     */
+    private void requestServiceStop() {
+        boolean hadStart = wanted;
+        wanted = false;
+        if (!hadStart && !WorkoutForegroundService.isRunning()) return;
+
+        Context app = getContext().getApplicationContext();
+        Intent intent = new Intent(app, WorkoutForegroundService.class);
+        intent.setAction(WorkoutForegroundService.ACTION_STOP);
+        try {
+            app.startService(intent);
+        } catch (Exception e) {
+            // IllegalStateException em segundo plano sem foreground ativo — ou seja, sem
+            // serviço rodando, que é justamente o caso em que não há nada a parar.
+            Log.w(TAG, "stop do serviço falhou", e);
+        }
     }
 
     private void stopHeartbeat() {

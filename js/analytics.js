@@ -10,7 +10,8 @@ import { zoneCalcFromSummary } from './zone-calculator.js';
  * de progressão. Elas seguem visíveis no histórico, com selo; só não contam para número.
  */
 function realWorkouts() {
-  return Storage.getWorkouts().filter(w => !w.demo);
+  // Também fora: sessões curtas demais para serem treino (Storage.MIN_COUNTED_SECONDS).
+  return Storage.getWorkouts().filter(Storage.countsAsTraining);
 }
 
 /** Midnight local time, so a ride at 23:50 belongs to the day it felt like. */
@@ -211,19 +212,34 @@ export function getFitnessTrend() {
  * sentido com histórico suficiente, por isso devolve null quando não há.
  */
 export function getTrainingLoad() {
-  const workouts = realWorkouts().filter(w => w.rpe > 0);
+  return computeTrainingLoad(realWorkouts());
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Núcleo puro de getTrainingLoad, testável sem storage.
+ *
+ * Janelas MÓVEIS de 7 dias terminando agora, não semanas de calendário. A versão anterior
+ * usava a semana desde segunda-feira como carga aguda e a comparava com semanas inteiras:
+ * toda segunda de manhã a razão despencava para perto de zero ("pode ser perda de ritmo")
+ * e só ficava justa no domingo, o mesmo treino lendo diferente conforme o dia da semana.
+ *
+ * @param {object[]} allWorkouts treinos reais (sem demo), com ou sem RPE
+ * @param {number} [now] epoch ms — injetável para teste
+ */
+export function computeTrainingLoad(allWorkouts, now = Date.now()) {
+  const workouts = allWorkouts.filter(w => w.rpe > 0);
   if (workouts.length === 0) return null;
 
   const load = (w) => Math.round((w.durationSeconds / 60) * w.rpe);
-  const thisWeek = startOfWeek();
 
+  // Janela k = [agora − 7(k+1) dias, agora − 7k dias).
   const weekLoad = (weeksBack) => {
-    const start = new Date(thisWeek);
-    start.setDate(start.getDate() - 7 * weeksBack);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 7);
+    const end = now - 7 * DAY_MS * weeksBack;
+    const start = end - 7 * DAY_MS;
     return workouts
-      .filter(w => { const d = new Date(w.date); return d >= start && d < end; })
+      .filter(w => { const d = new Date(w.date).getTime(); return d >= start && d < end; })
       .reduce((sum, w) => sum + load(w), 0);
   };
 
@@ -248,7 +264,7 @@ export function getTrainingLoad() {
     ratio: chronic ? Math.round((acute / chronic) * 100) / 100 : null,
     sessions,
     /** Quantos treinos ainda estão sem RPE — a razão de a carga poder subestimar. */
-    missingRpe: realWorkouts().filter(w => !w.rpe).length,
+    missingRpe: allWorkouts.filter(w => !w.rpe).length,
   };
 }
 

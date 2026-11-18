@@ -67,6 +67,18 @@ export class CalorieCalculator {
 }
 
 /**
+ * Gasto basal de um intervalo, em kcal — o que somado às calorias ATIVAS dá o total.
+ *
+ * Existe para o Health Connect: TotalCaloriesBurned é ativo + basal, e gravar ali o valor
+ * ativo (como era feito) subnotificava o total e deixava os dois registros iguais.
+ */
+export function restingKcal(profile, minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  const p = profile || {};
+  return computeBmrPerMin(p.sex, p.weight, p.age, p.height) * minutes;
+}
+
+/**
  * Basal metabolic rate in kcal/min, subtracted from the Keytel total so what is reported
  * is *active* calories — the same convention Samsung Health, Apple Watch and Garmin use.
  *

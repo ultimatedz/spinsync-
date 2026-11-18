@@ -70,6 +70,20 @@ export function saveWorkout(workout) {
   return writeJSON(WORKOUTS_KEY, workouts);
 }
 
+/**
+ * Abaixo disto uma sessão não é treino: um início acidental, um teste de sensor.
+ *
+ * Elas entravam em meta semanal, recordes, médias e tentativas da escada — oito toques de
+ * poucos segundos "batiam" uma meta de três treinos. Continuam no histórico quando o
+ * usuário escolhe guardá-las; só não contam para número nenhum.
+ */
+export const MIN_COUNTED_SECONDS = 120;
+
+/** Se o treino conta para estatísticas, metas e progressão. */
+export function countsAsTraining(w) {
+  return !!w && !w.demo && (Number(w.durationSeconds) || 0) >= MIN_COUNTED_SECONDS;
+}
+
 export function getWorkoutById(id) {
   return getWorkouts().find(w => w.id === id) || null;
 }

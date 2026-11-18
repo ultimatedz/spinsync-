@@ -512,12 +512,14 @@ class SpinSyncApp {
   }
 
   /** @returns {Promise<boolean>} */
-  confirm({ title = 'Confirmar', text = '', confirmLabel = 'Confirmar', danger = true }) {
+  confirm({ title = 'Confirmar', text = '', confirmLabel = 'Confirmar', cancelLabel = 'Cancelar', danger = true }) {
     const modal = document.getElementById('confirm-modal');
     if (!modal) return Promise.resolve(false);
 
     document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-text').textContent = text;
+    // Sempre reescrito: um rótulo custom não pode vazar para o próximo diálogo.
+    document.getElementById('btn-confirm-cancel').textContent = cancelLabel;
 
     const okBtn = document.getElementById('btn-confirm-ok');
     okBtn.textContent = confirmLabel;
@@ -643,12 +645,14 @@ class SpinSyncApp {
 
   // ── Backup ──
 
-  exportData() {
+  async exportData() {
     try {
       const payload = Storage.exportAll();
       const stamp = new Date().toISOString().slice(0, 10);
-      this.downloadFile(JSON.stringify(payload, null, 2), `spinsync-backup-${stamp}.json`, 'application/json');
-      this.toast(`Backup com ${payload.workouts.length} treino(s) gerado.`, 'success');
+      const where = await this.saveFile(
+        JSON.stringify(payload, null, 2), `spinsync-backup-${stamp}.json`, 'application/json'
+      );
+      this.toast(`Backup com ${payload.workouts.length} treino(s) salvo${where ? ` em ${where}` : ''}.`, 'success', 6000);
     } catch (e) {
       console.error('[App] Export failed:', e);
       this.toast('Não foi possível gerar o backup.', 'error');
@@ -664,37 +668,62 @@ class SpinSyncApp {
     const status = document.getElementById('auto-backup-status');
     if (!status) return;
     const last = await AutoBackup.getLastBackupLabel();
+    // Dizer ONDE é o que importa: só a cópia em Documentos sobrevive a desinstalar o app.
+    // E ela é legível por outros apps com acesso a arquivos — o usuário merece saber.
+    const where = AutoBackup.getLastBackupWhere() === 'data'
+      ? 'na memória interna do app — é apagado se o app for desinstalado'
+      : 'em Documentos/SpinSync — sobrevive à desinstalação e fica visível para apps com acesso a arquivos';
     status.textContent = last
-      ? `Último backup automático: ${last}. São guardadas as 5 cópias mais recentes.`
+      ? `Último backup automático: ${last}, ${where}. São mantidas as 5 cópias mais recentes.`
       : 'Ainda sem backup automático.';
   }
 
   async backupNow() {
     const result = await AutoBackup.maybeBackup(true);
     this.toast(
-      result ? `Backup salvo (${result.workouts} treino(s)).` : 'Não foi possível salvar o backup.',
-      result ? 'success' : 'error'
+      result
+        ? `Backup salvo em ${result.where === 'documents' ? result.path : 'memória interna do app'} (${result.workouts} treino(s)).`
+        : 'Não foi possível salvar o backup.',
+      result ? 'success' : 'error', 6000
     );
     this.updateBackupCard();
   }
 
-  /** Shared download path for the JSON backup and the per-ride TCX. */
-  downloadFile(contents, filename, mime) {
+  /**
+   * Caminho comum do backup JSON e do TCX.
+   *
+   * No APK, `<a download>` de blob não faz nada — a WebView do Capacitor não tem
+   * DownloadListener —, então lá o arquivo vai por Filesystem para Documentos/SpinSync.
+   *
+   * @returns {Promise<string|null>} onde o arquivo ficou, para o toast; null no navegador,
+   *   onde é o próprio navegador quem mostra o download.
+   */
+  async saveFile(contents, filename, mime) {
+    if (AutoBackup.isAvailable()) {
+      const result = await AutoBackup.writeUserFile(filename, contents);
+      if (!result) throw new Error('Filesystem recusou a gravação');
+      return result.where === 'documents' ? result.path : 'memória interna do app';
+    }
+
     const url = URL.createObjectURL(new Blob([contents], { type: mime }));
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return null;
   }
 
   /** Exports the summary on screen in a format other training apps can read. */
-  exportTCX() {
+  async exportTCX() {
     const summary = this.viewingSummary;
     if (!summary) return;
     try {
-      this.downloadFile(buildTCX(summary), tcxFilename(summary), 'application/vnd.garmin.tcx+xml');
-      this.toast('Arquivo TCX gerado — abre no Strava e no Garmin Connect.', 'success');
+      const where = await this.saveFile(buildTCX(summary), tcxFilename(summary), 'application/vnd.garmin.tcx+xml');
+      this.toast(
+        `Arquivo TCX salvo${where ? ` em ${where}` : ''} — abre no Strava e no Garmin Connect.`,
+        'success', 6000
+      );
     } catch (e) {
       console.error('[App] TCX export failed:', e);
       this.toast('Não foi possível gerar o TCX.', 'error');
@@ -799,7 +828,7 @@ class SpinSyncApp {
     if (hrvDrop > 0.1) reasons.push(`variabilidade ${Math.round(hrvDrop * 100)}% abaixo da sua média`);
     if (rhrRise >= 3) reasons.push(`FC de repouso ${rhrRise} bpm acima do normal`);
     if (shortSleep) reasons.push(`${recovery.sleepHours} h de sono`);
-    if (loadSpike) reasons.push(`carga da semana ${load.ratio}× a média`);
+    if (loadSpike) reasons.push(`carga dos últimos 7 dias ${load.ratio}× a média`);
 
     document.getElementById('readiness-text').textContent = reasons.length
       ? `${reasons.join(', ')}. ${flags >= 3 ? 'Considere um treino leve hoje.' : 'Dá para treinar, sem forçar o topo.'}`
@@ -1219,7 +1248,12 @@ class SpinSyncApp {
     if (!this.recorder) return;
 
     const dp = this.recorder.tick();
-    if (!dp) return;
+    if (!dp) {
+      // Pausado, tick() não grava nada — mas o relógio precisa continuar recebendo o
+      // pacote, ou ele expira o treino em 15 s e "Treino pausado" nunca aparece no pulso.
+      if (this.recorder.isPaused) this.mirrorToWatch();
+      return;
+    }
 
     // Update timer
     document.getElementById('workout-timer').textContent = this.recorder.getFormattedTime();
@@ -1258,12 +1292,21 @@ class SpinSyncApp {
    * live here. On a bike the phone is clamped out of easy reach, so the wrist is the
    * screen that actually gets read mid-effort.
    *
-   * Fire and forget, once per tick: the write is writeWithoutResponse and disables itself
-   * permanently on a plain strap that has no such characteristic.
+   * Fire and forget, about once a second: the write is writeWithoutResponse and turns
+   * itself off on a plain strap that has no such characteristic.
+   *
+   * @param {boolean} force ignora o limite de taxa — para mudanças de estado (pausa) que o
+   *   relógio deve refletir na hora, e não no próximo tick.
    */
-  mirrorToWatch() {
+  mirrorToWatch(force = false) {
     const ble = this.ble;
     if (!ble?.sendWorkoutStatus || !this.recorder) return;
+
+    // Pausado, as duas fontes de tick (timer JS e heartbeat nativo) chegam aqui sem a
+    // deduplicação do recorder; sem este limite seriam duas escritas por segundo.
+    const now = Date.now();
+    if (!force && now - (this._lastMirrorAt || 0) < 800) return;
+    this._lastMirrorAt = now;
 
     const status = {
       active: true,
@@ -1476,7 +1519,11 @@ class SpinSyncApp {
    * ignora intervalos abaixo de meio segundo.
    */
   startTicking(fn, title) {
-    this.stopTicking();
+    // Só as fontes de tick — NÃO stopTicking(). Aquele também para o foreground service, e
+    // um stop disparado colado no start fazia o Android matar o app ao iniciar qualquer
+    // treino (ver WorkoutForegroundService.onStartCommand). O nativo agora tolera a
+    // sequência, mas não há razão para mandá-la.
+    this.clearTickSources();
     // Volta é por sessão: um banner remanescente falaria da sessão anterior.
     document.querySelectorAll('.lap-banner').forEach(el => { el.hidden = true; });
     this.tickInterval = setInterval(fn, 1000);
@@ -1498,7 +1545,13 @@ class SpinSyncApp {
     WorkoutService.update(title, parts.join(' · '));
   }
 
+  /** Encerra o treino: fontes de tick e o foreground service. */
   stopTicking() {
+    this.clearTickSources();
+    WorkoutService.stop();
+  }
+
+  clearTickSources() {
     if (this.tickInterval) {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
@@ -1507,7 +1560,6 @@ class SpinSyncApp {
       this._tickOff();
       this._tickOff = null;
     }
-    WorkoutService.stop();
   }
 
   markLap() {
@@ -1571,9 +1623,12 @@ class SpinSyncApp {
   setPauseButton(paused) {
     const id = this.currentView === 'guided' ? 'btn-guided-pause' : 'btn-pause';
     const btn = document.getElementById(id);
-    if (!btn) return;
-    btn.classList.toggle('paused', paused);
-    btn.innerHTML = paused ? '▶ Retomar' : '⏸ Pausar';
+    if (btn) {
+      btn.classList.toggle('paused', paused);
+      btn.innerHTML = paused ? '▶ Retomar' : '⏸ Pausar';
+    }
+    // Todo caminho de pausa (toque, auto-pause, retomada pelo pedal) passa por aqui.
+    this.mirrorToWatch(true);
   }
 
   togglePause() {
@@ -1614,14 +1669,41 @@ class SpinSyncApp {
       if (this.demoMode) this.viewingSummary.demo = true;
     }
 
-    // Save FIRST. Persisting only from the summary buttons meant one tap on the bottom
-    // nav threw the whole ride away with no warning and no recovery.
-    this.persistSummary(this.viewingSummary);
+    this.concludeSession();
+  }
 
-    // Release wake lock
+  /**
+   * Destino comum de stopWorkout e stopGuidedWorkout, com o recorder já parado.
+   *
+   * Save FIRST: persistir só pelos botões do resumo fazia um toque na barra de navegação
+   * jogar o treino fora sem aviso. A exceção é a sessão curta demais para contar — um
+   * início acidental, um teste de sensor —, que antes entrava calada em meta, recordes e
+   * médias. Para essa o app pergunta; até a resposta, o estado de recuperação continua
+   * salvo, então nem um fechamento do app nesse meio-tempo a perde.
+   */
+  async concludeSession() {
     this.releaseWakeLock();
 
-    // Show summary
+    const summary = this.viewingSummary;
+    if (summary && (summary.durationSeconds || 0) < Storage.MIN_COUNTED_SECONDS) {
+      const keep = await this.confirm({
+        title: 'Treino muito curto',
+        text: `Foram ${summary.durationFormatted}. Sessões com menos de 2 minutos não contam para meta, carga nem estatísticas. Guardar no histórico mesmo assim?`,
+        confirmLabel: 'Guardar',
+        cancelLabel: 'Descartar',
+        danger: false,
+      });
+      if (!keep) {
+        Storage.clearActiveWorkout();
+        this.viewingSummary = null;
+        this.viewStack = [];
+        this.toast('Treino descartado.', 'info');
+        this.showView('home', { push: false });
+        return;
+      }
+    }
+
+    this.persistSummary(this.viewingSummary);
     this.showSummaryView(this.viewingSummary, 'live');
   }
 
@@ -1797,11 +1879,13 @@ class SpinSyncApp {
     if (!load.chronic) {
       hint.textContent = 'Carga = minutos × esforço percebido. Com mais algumas semanas dá para comparar com a sua média.';
     } else if (load.ratio >= 1.5) {
-      hint.textContent = `Sua semana está ${load.ratio}× a média das últimas quatro. Salto grande de volume é o padrão associado a lesão — vale segurar.`;
+      // "Salto de volume", não "risco de lesão": a capacidade da razão aguda:crônica de
+      // prever lesão é contestada na literatura. O salto em si é o fato observável.
+      hint.textContent = `Seus últimos 7 dias estão ${load.ratio}× a média das quatro semanas anteriores. É um salto grande de volume — vale segurar até o corpo acompanhar.`;
     } else if (load.ratio >= 1.3) {
-      hint.textContent = `Semana ${load.ratio}× acima da média. Subida forte, mas ainda dentro do razoável.`;
+      hint.textContent = `Últimos 7 dias ${load.ratio}× acima da média. Subida forte, mas ainda dentro do razoável.`;
     } else if (load.ratio < 0.8) {
-      hint.textContent = `Semana ${load.ratio}× a média. Pode ser descanso planejado — ou perda de ritmo.`;
+      hint.textContent = `Últimos 7 dias a ${load.ratio}× da média. Pode ser descanso planejado — ou perda de ritmo.`;
     } else {
       hint.textContent = 'Volume em linha com as últimas semanas.';
     }
@@ -2021,7 +2105,9 @@ class SpinSyncApp {
     HealthSync.syncWorkout(summary).then(result => {
       if (result.success) {
         this.toast('Treino enviado ao Health Connect', 'success');
-      } else if (HealthSync.isNativeMode()) {
+      } else if (HealthSync.isNativeMode() && !result.skipped) {
+        // `skipped` = nunca autorizado: não é falha, e um toast de erro a cada treino
+        // seria só barulho para quem escolheu não usar o Health Connect.
         console.log('[App] Health sync failed:', result.error);
         this.toast('Não foi possível enviar ao Health Connect', 'error');
       }
@@ -2481,7 +2567,11 @@ class SpinSyncApp {
 
   guidedTick() {
     if (!this.recorder || !this.guidedPlan) return;
-    if (this.recorder.isPaused) return;
+    if (this.recorder.isPaused) {
+      // Mesmo motivo do treino livre: sem pacote, o relógio apaga o treino em 15 s.
+      this.mirrorToWatch();
+      return;
+    }
 
     const dp = this.recorder.tick();
     if (!dp) return;
@@ -2700,11 +2790,8 @@ class SpinSyncApp {
 
     Haptics.cancel();
 
-    this.persistSummary(this.viewingSummary);
-
-    this.releaseWakeLock();
     this.guidedPlan = null;
-    this.showSummaryView(this.viewingSummary, 'live');
+    this.concludeSession();
   }
 
   // ══════════════════════════════════════════
@@ -3161,11 +3248,33 @@ function showBootError(error) {
   document.body.appendChild(screen);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  // Register Service Worker
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+/**
+ * Service worker só no PWA.
+ *
+ * No APK os arquivos já são locais (o Capacitor os serve de dentro do pacote), então o
+ * SW não acrescenta nada offline — e, sendo stale-while-revalidate, fazia o PRIMEIRO boot
+ * depois de cada atualização do APK rodar o JS da versão anterior, que ainda estava no
+ * cache. Uma correção instalada só valia a partir do segundo boot. Os registros e caches
+ * deixados por versões antigas são removidos aqui.
+ */
+function setupServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+
+  if (window.Capacitor?.isNativePlatform?.()) {
+    navigator.serviceWorker.getRegistrations()
+      .then(regs => regs.forEach(r => r.unregister()))
+      .catch(() => {});
+    window.caches?.keys()
+      .then(keys => keys.forEach(k => caches.delete(k)))
+      .catch(() => {});
+    return;
   }
+
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  setupServiceWorker();
 
   try {
     window.app = new SpinSyncApp();

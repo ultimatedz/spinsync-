@@ -77,5 +77,12 @@ o sensor para de amostrar com a tela apagada.
 
 ## Onde os dados ficam
 
-Tudo em `localStorage` no aparelho. Não há servidor. O botão "Exportar backup (JSON)" na
-tela de perfil é a única cópia de segurança — desinstalar o app apaga o histórico inteiro.
+Tudo em `localStorage` no aparelho. Não há servidor. Desinstalar o app ou limpar os dados
+dele apaga o histórico do app.
+
+A cópia de segurança fica fora do app, em **Documentos/SpinSync** (Android 11+): um backup
+automático por dia (as 5 cópias mais recentes) mais o que for exportado à mão — backup JSON
+e TCX. Esses arquivos sobrevivem à desinstalação e voltam por "Importar backup". No Android
+10 ou anterior, onde Documentos exigiria permissão de armazenamento, o backup cai para a
+pasta interna do app e o card do perfil avisa que ele não sobrevive à desinstalação. No
+navegador (PWA) o export é um download comum.

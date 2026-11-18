@@ -66,6 +66,35 @@ const WATCHDOG_INTERVAL_MS = 5000;
 const BT_OFF_RECHECK_MS = 5000;
 
 /**
+ * Escritas no relógio (háptico e estado do treino) que podem falhar em sequência antes de
+ * o canal ser desligado até a próxima conexão.
+ *
+ * Antes uma única falha desligava o espelhamento para o resto da sessão — inclusive uma
+ * falha passageira no meio do treino (fila GATT ocupada, interferência), e a reconexão não
+ * religava. Cinta comum não chega a gastar as tentativas: ver isMissingCharacteristic.
+ */
+const MAX_WATCH_WRITE_FAILURES = 5;
+
+/** O periférico não tem o serviço do relógio — cinta comum. Não adianta insistir. */
+function isMissingCharacteristic(err) {
+  const msg = (err?.message || String(err || '')).toLowerCase();
+  return err?.name === 'NotFoundError' || msg.includes('not found');
+}
+
+/** Estado das duas escritas no relógio. Recriado a cada conexão de FC. */
+function newWatchWriteState() {
+  return { haptic: { off: false, failures: 0 }, workout: { off: false, failures: 0 } };
+}
+
+/** @returns {boolean} true quando o canal acabou de ser desligado. */
+function recordWatchWriteFailure(slot, err) {
+  if (slot.off) return false;
+  slot.failures++;
+  slot.off = isMissingCharacteristic(err) || slot.failures >= MAX_WATCH_WRITE_FAILURES;
+  return slot.off;
+}
+
+/**
  * Detect if running in Capacitor native context.
  */
 function isCapacitorNative() {
@@ -104,11 +133,10 @@ export class BLENativeManager extends EventTarget {
     this.cadenceParser = new CadenceParser(Storage.getSettings().wheelCircumferenceMm);
     this._ble = null;
     this._initialized = false;
-    // Capacidades do periférico atual. A de treino nunca era inicializada nem resetada:
-    // bastava conectar uma vez numa cinta comum para o espelhamento do relógio ficar
-    // desligado até recarregar a página, mesmo trocando de sensor depois.
-    this._hapticUnsupported = false;
-    this._workoutUnsupported = false;
+    // Capacidades do periférico atual, zeradas a cada conexão de FC (ver _attach): o
+    // próximo sensor — ou o mesmo relógio depois de uma queda — pode suportar o que este
+    // não suportava.
+    this._watchWrite = newWatchWriteState();
 
     this._channels = {
       hr: this._newChannel('hr', HR_SERVICE, HR_MEASUREMENT, 'HR Monitor'),
@@ -244,6 +272,9 @@ export class BLENativeManager extends EventTarget {
     );
 
     if (kind === 'csc') this.cadenceParser.reset();
+    // Inclui as reconexões automáticas: um espelhamento desligado por falhas no link que
+    // caiu volta a valer no link novo.
+    if (kind === 'hr') this._watchWrite = newWatchWriteState();
 
     await this._ble.startNotifications(
       deviceId,
@@ -283,10 +314,7 @@ export class BLENativeManager extends EventTarget {
     ch.deviceName = null;
     if (kind === 'csc') this.cadenceParser.reset();
     // O próximo sensor pode suportar o que este não suportava.
-    if (kind === 'hr') {
-      this._hapticUnsupported = false;
-      this._workoutUnsupported = false;
-    }
+    if (kind === 'hr') this._watchWrite = newWatchWriteState();
 
     // An explicit disconnect means "forget this sensor" — otherwise the user could
     // never switch to a different one.
@@ -301,24 +329,10 @@ export class BLENativeManager extends EventTarget {
    * @returns {Promise<boolean>} whether the cue was delivered
    */
   async sendHaptic(patternId) {
-    const ch = this._channels.hr;
-    if (!ch.connected || !ch.deviceId || !this._ble || this._hapticUnsupported) return false;
-
-    try {
-      await this._ble.writeWithoutResponse(
-        ch.deviceId,
-        HAPTIC_SERVICE,
-        HAPTIC_CHARACTERISTIC,
-        new DataView(Uint8Array.of(patternId & 0xff).buffer)
-      );
-      return true;
-    } catch (err) {
-      // A regular HR strap has no such service; stop trying rather than throwing once
-      // per phase change for the rest of the session.
-      this._hapticUnsupported = true;
-      console.log('[BLE Native] Haptics unavailable on this sensor:', err?.message);
-      return false;
-    }
+    return this._writeToWatch(
+      this._watchWrite.haptic, HAPTIC_CHARACTERISTIC,
+      new DataView(Uint8Array.of(patternId & 0xff).buffer), 'Haptics'
+    );
   }
 
   /**
@@ -326,17 +340,24 @@ export class BLENativeManager extends EventTarget {
    * Same no-op-on-a-plain-strap contract as sendHaptic.
    */
   async sendWorkoutStatus(status) {
+    return this._writeToWatch(
+      this._watchWrite.workout, WORKOUT_CHARACTERISTIC, buildWorkoutPacket(status), 'Workout mirroring'
+    );
+  }
+
+  /** Escrita no serviço do relógio, com a política de MAX_WATCH_WRITE_FAILURES. */
+  async _writeToWatch(slot, characteristic, value, label) {
     const ch = this._channels.hr;
-    if (!ch.connected || !ch.deviceId || !this._ble || this._workoutUnsupported) return false;
+    if (!ch.connected || !ch.deviceId || !this._ble || slot.off) return false;
 
     try {
-      await this._ble.writeWithoutResponse(
-        ch.deviceId, HAPTIC_SERVICE, WORKOUT_CHARACTERISTIC, buildWorkoutPacket(status)
-      );
+      await this._ble.writeWithoutResponse(ch.deviceId, HAPTIC_SERVICE, characteristic, value);
+      slot.failures = 0;
       return true;
     } catch (err) {
-      this._workoutUnsupported = true;
-      console.log('[BLE Native] Workout mirroring unavailable:', err?.message);
+      if (recordWatchWriteFailure(slot, err)) {
+        console.log(`[BLE Native] ${label} off until the next connection:`, err?.message);
+      }
       return false;
     }
   }
@@ -509,8 +530,7 @@ export class BLEManager extends EventTarget {
     this._hrAutoReconnect = false;
     this._hrReconnectTimer = null;
     this._hrReconnectAttempt = 0;
-    this._hapticUnsupported = false;
-    this._workoutUnsupported = false;
+    this._watchWrite = newWatchWriteState();
   }
 
   get hrConnected() { return this._hrConnected; }
@@ -560,6 +580,8 @@ export class BLEManager extends EventTarget {
   async _attachHR() {
     this._emit('hr-status', 'connecting');
     this.hrServer = await this.hrDevice.gatt.connect();
+    // Roda de novo a cada reconexão: o link novo merece uma chance nova.
+    this._watchWrite = newWatchWriteState();
 
     const service = await this.hrServer.getPrimaryService(HR_SERVICE_SHORT);
     this.hrCharacteristic = await service.getCharacteristic(0x2A37);
@@ -624,27 +646,28 @@ export class BLEManager extends EventTarget {
   }
 
   async sendHaptic(patternId) {
-    if (!this._hrConnected || !this.hrServer?.connected || this._hapticUnsupported) return false;
-    try {
-      const service = await this.hrServer.getPrimaryService(HAPTIC_SERVICE);
-      const characteristic = await service.getCharacteristic(HAPTIC_CHARACTERISTIC);
-      await characteristic.writeValueWithoutResponse(Uint8Array.of(patternId & 0xff));
-      return true;
-    } catch (err) {
-      this._hapticUnsupported = true;
-      return false;
-    }
+    return this._writeToWatch(
+      this._watchWrite.haptic, HAPTIC_CHARACTERISTIC, Uint8Array.of(patternId & 0xff)
+    );
   }
 
   async sendWorkoutStatus(status) {
-    if (!this._hrConnected || !this.hrServer?.connected || this._workoutUnsupported) return false;
+    return this._writeToWatch(
+      this._watchWrite.workout, WORKOUT_CHARACTERISTIC, buildWorkoutPacket(status)
+    );
+  }
+
+  /** Mesma política de falhas do gerenciador nativo. */
+  async _writeToWatch(slot, characteristicUuid, value) {
+    if (!this._hrConnected || !this.hrServer?.connected || slot.off) return false;
     try {
       const service = await this.hrServer.getPrimaryService(HAPTIC_SERVICE);
-      const characteristic = await service.getCharacteristic(WORKOUT_CHARACTERISTIC);
-      await characteristic.writeValueWithoutResponse(buildWorkoutPacket(status));
+      const characteristic = await service.getCharacteristic(characteristicUuid);
+      await characteristic.writeValueWithoutResponse(value);
+      slot.failures = 0;
       return true;
     } catch (err) {
-      this._workoutUnsupported = true;
+      recordWatchWriteFailure(slot, err);
       return false;
     }
   }
