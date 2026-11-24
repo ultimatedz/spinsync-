@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base application theme. Dark, not Light: the web app is #0D1117 end to end, and a
+         light window background flashed white between the splash and the first WebView
+         paint on every cold start. -->
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">@color/spinsyncAccent</item>
+        <item name="colorPrimaryDark">@color/spinsyncBackground</item>
+        <item name="colorAccent">@color/spinsyncAccent</item>
+        <item name="android:windowBackground">@color/spinsyncBackground</item>
+        <item name="android:statusBarColor">@color/spinsyncBackground</item>
+        <item name="android:navigationBarColor">@color/spinsyncBackground</item>
+
+        <!-- Both keys, on purpose. The BLE device picker
+             (@capacitor-community/bluetooth-le DeviceScanner.kt) builds an
+             android.app.AlertDialog, which reads the framework key; AppCompat dialogs read
+             the unprefixed one. Without this the framework key kept resolving to the
+             system's *light* alert dialog while textColorPrimary came from this dark theme:
+             white text on a white sheet, so the device list rendered blank. -->
+        <item name="android:alertDialogTheme">@style/AppTheme.Dialog</item>
+        <item name="alertDialogTheme">@style/AppTheme.Dialog</item>
+        <item name="android:dialogTheme">@style/AppTheme.Dialog</item>
+    </style>
+
+    <style name="AppTheme.NoActionBar" parent="AppTheme">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+
+    <!-- Colours are spelled out rather than inherited so the background and the text can
+         never come from two different themes again. -->
+    <style name="AppTheme.Dialog" parent="Theme.AppCompat.Dialog.Alert">
+        <item name="android:background">@color/spinsyncSurface</item>
+        <item name="android:windowBackground">@color/spinsyncSurface</item>
+        <item name="android:textColor">@color/spinsyncTextPrimary</item>
+        <item name="android:textColorPrimary">@color/spinsyncTextPrimary</item>
+        <item name="android:textColorSecondary">@color/spinsyncTextSecondary</item>
+        <item name="android:textColorAlertDialogListItem">@color/spinsyncTextPrimary</item>
+        <item name="colorAccent">@color/spinsyncAccent</item>
+    </style>
+
+
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="android:background">@drawable/splash</item>
+    </style>
+</resources>

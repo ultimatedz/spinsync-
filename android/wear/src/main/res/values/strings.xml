@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SpinSync HR</string>
+
+    <string name="btn_start">Transmitir</string>
+    <string name="btn_stop">Parar</string>
+
+    <string name="status_idle">Parado</string>
+    <string name="status_starting">Iniciando…</string>
+    <string name="status_advertising">Aguardando o celular…</string>
+    <string name="status_connected">Conectado</string>
+    <string name="status_acquiring">Aguardando sinal…</string>
+    <!-- Only shown for a debounced UNAVAILABLE_DEVICE_OFF_BODY. It used to be the catch-all
+         for every "no fresh sample" condition, which made it a lie most of the time. -->
+    <string name="status_no_contact">Fora do pulso</string>
+    <string name="status_session_busy">Sessão de exercício em uso por outro app</string>
+    <string name="status_permission_denied">Permissão negada</string>
+    <string name="status_no_sensor">Sensor indisponível</string>
+    <string name="status_no_peripheral">Este relógio não suporta BLE peripheral</string>
+    <string name="status_bt_off">Bluetooth desligado</string>
+
+    <!-- Second status line: says why we are degraded, instead of blaming the wrist. -->
+    <string name="detail_limited_mode">Modo limitado — sem sessão de exercício</string>
+    <string name="detail_no_activity_permission">Falta permissão de atividade física</string>
+    <string name="detail_session_busy">Outro app assumiu a sessão</string>
+
+    <string name="tile_idle">Toque para transmitir</string>
+
+    <string name="bpm_placeholder">--</string>
+    <string name="unit_bpm">bpm</string>
+    <string name="dot_separator">·</string>
+    <string name="duration_placeholder">0:00</string>
+    <string name="calories_placeholder">0 kcal</string>
+    <string name="calories_fmt">%1$d kcal</string>
+
+    <!-- Next-phase warning. "Sobe"/"Alivia" beat "Zona 4" here: mid-effort you need the
+         action, not the label. -->
+    <string name="next_harder_fmt">Sobe em %1$s</string>
+    <string name="next_easier_fmt">Alivia em %1$s</string>
+    <string name="next_same_fmt">Troca em %1$s</string>
+    <string name="workout_paused">Treino pausado</string>
+    <string name="target_rpm_fmt">Alvo %1$d-%2$d rpm</string>
+    <string name="subscribers_none">0 apps conectados</string>
+    <string name="subscribers_fmt">%1$d app(s) conectado(s)</string>
+
+    <string name="notif_channel_name">Transmissão de BPM</string>
+    <string name="notif_title">SpinSync HR</string>
+    <string name="notif_text_idle">Transmitindo frequência cardíaca</string>
+    <string name="notif_text_fmt">%1$d bpm · %2$d app(s)</string>
+</resources>
