@@ -26,8 +26,14 @@ const MAX_CREDIT_MS = 90_000;
 const SAMPLE_STALE_MS = 12_000;
 
 export class WorkoutRecorder {
-  constructor(profile) {
+  /**
+   * @param {object} profile
+   * @param {object} [opts]
+   * @param {number} [opts.metersPerRev] marcha virtual para a distância estimada (goals.js)
+   */
+  constructor(profile, { metersPerRev = 5.5 } = {}) {
     this.profile = profile;
+    this.metersPerRev = metersPerRev;
     this.zoneCalc = new ZoneCalculator(profile);
     this.calorieCalc = new CalorieCalculator(
       profile.sex, profile.weight, profile.age, profile.height
@@ -75,6 +81,9 @@ export class WorkoutRecorder {
     this.currentSpeed = 0;
     this.speedMax = 0;
     this.distanceM = 0;
+    // Distância ESTIMADA pela cadência (pedaladas × marcha virtual). Separada da real de
+    // propósito: o TCX e o Health Connect recebem só a medida, e as telas rotulam esta.
+    this.estDistanceM = 0;
 
     // Laps. Closed on demand; the segment still running is not in here.
     this.laps = [];
@@ -179,6 +188,7 @@ export class WorkoutRecorder {
       this.rpmSum += rpm * dtSec;
       this.rpmCount += dtSec;
       if (rpm > this.rpmMax) this.rpmMax = rpm;
+      this.estDistanceM += (rpm / 60) * dtSec * this.metersPerRev;
     }
 
     if (zoneId > 0) this.zoneTimeMs[zoneId] = (this.zoneTimeMs[zoneId] || 0) + dtMs;
@@ -312,6 +322,8 @@ export class WorkoutRecorder {
       zoneTimeMs: { ...this.zoneTimeMs },
       unclassifiedMs: this.unclassifiedMs,
       distanceM: this.distanceM,
+      estDistanceM: this.estDistanceM,
+      metersPerRev: this.metersPerRev,
       speedMax: this.speedMax,
       lastBpmAt: this.lastBpmAt,
       lastRpmAt: this.lastRpmAt,
@@ -347,6 +359,8 @@ export class WorkoutRecorder {
       || Object.fromEntries(Object.entries(state.zoneTime || {}).map(([k, v]) => [k, v * 1000]));
     this.unclassifiedMs = state.unclassifiedMs || 0;
     this.distanceM = state.distanceM || 0;
+    this.estDistanceM = state.estDistanceM || 0;
+    if (Number.isFinite(state.metersPerRev)) this.metersPerRev = state.metersPerRev;
     this.speedMax = state.speedMax || 0;
     this.lastBpmAt = state.lastBpmAt || 0;
     this.lastRpmAt = state.lastRpmAt || 0;
@@ -392,6 +406,8 @@ export class WorkoutRecorder {
       // não havia como distinguir falta de sinal de erro de contagem.
       unclassifiedSeconds: Math.round(this.unclassifiedMs / 1000),
       distanceM: Math.round(this.distanceM),
+      estDistanceM: Math.round(this.estDistanceM),
+      metersPerRev: this.metersPerRev,
       avgSpeedKmh: this.getAvgSpeed(),
       maxSpeedKmh: Math.round(this.speedMax * 10) / 10,
       laps: this.laps.slice(),

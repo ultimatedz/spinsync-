@@ -92,7 +92,10 @@ export function getStats(period = 'month') {
     totalCalories: Math.round(totalCalories),
     avgBPM,
     avgRPM,
-    chartData
+    chartData,
+    // Os treinos do período, para quem precisa de algo que depende de ajuste do usuário
+    // (a distância estimada usa a marcha virtual, que vive em goals.js).
+    workouts: filtered,
   };
 }
 

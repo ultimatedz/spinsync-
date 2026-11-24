@@ -1,5 +1,56 @@
 import { ZONES } from './zone-calculator.js';
 
+/**
+ * Tema único de todos os gráficos — inclusive os do Progresso, criados em app.js.
+ *
+ * Aplicado uma vez em Chart.defaults em vez de repetido em cada gráfico: antes cada um
+ * trazia a própria cópia de cores e tooltip, e elas já tinham divergido entre si.
+ */
+const THEME = {
+  text: '#8A9099',
+  grid: '#23262A',
+  tooltipBg: '#1B1E22',
+  tooltipText: '#F2F3F4',
+  hr: '#EF5350',
+  rpm: '#C9CDD2',
+  trend: '#D4F54C',
+};
+
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.color = THEME.text;
+  Chart.defaults.borderColor = THEME.grid;
+  Chart.defaults.font.family = 'system-ui, -apple-system, Roboto, "Segoe UI", sans-serif';
+  Chart.defaults.font.size = 11;
+  Chart.defaults.animation.duration = 300;
+  Object.assign(Chart.defaults.plugins.tooltip, {
+    backgroundColor: THEME.tooltipBg,
+    titleColor: THEME.tooltipText,
+    bodyColor: THEME.tooltipText,
+    borderColor: THEME.grid,
+    borderWidth: 1,
+    cornerRadius: 6,
+    displayColors: false,
+    padding: 8,
+  });
+}
+
+/** Série temporal de uma linha: o formato dos gráficos de FC e de cadência. */
+function lineOptions(yAxis, unit) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: (c) => `${c.parsed.y} ${unit}` } },
+    },
+    scales: {
+      x: { ticks: { maxTicksLimit: 6 }, grid: { display: false } },
+      y: { ...yAxis, ticks: { maxTicksLimit: 5 } },
+    },
+  };
+}
+
 export class WorkoutCharts {
   constructor() {
     this.charts = [];
@@ -10,155 +61,73 @@ export class WorkoutCharts {
     this.charts = [];
   }
 
-  /**
-   * Gráfico de BPM ao longo do tempo com zonas coloridas como fundo.
-   */
+  /** Frequência cardíaca ao longo do treino. */
   renderBPMChart(canvasId, summary) {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
 
     const points = summary.dataPoints || [];
     const labels = points.map(p => this._formatTimestamp(p.timestamp));
-    const bpmData = points.map(p => p.bpm);
+    const { reducedLabels, reducedData } = this._reduceData(labels, points.map(p => p.bpm), 300);
 
-    // Reduce data points for performance (max ~300 points)
-    const { reducedLabels, reducedData } = this._reduceData(labels, bpmData, 300);
-
-    // Havia aqui um `zoneBands` montando faixas coloridas de fundo por zona. Nunca foi
-    // passado ao Chart.js — exigiria o chartjs-plugin-annotation, que não está no projeto —
-    // então era só cálculo morto (e NaN em treino sem maxHR). Removido.
+    // Math.min() de array vazio é Infinity: num treino só com cadência o eixo ficava com
+    // min: Infinity e o gráfico não desenhava nada.
+    const beats = reducedData.filter(v => v > 0);
+    const yAxis = beats.length
+      ? { min: Math.max(0, Math.min(...beats) - 10), max: Math.max(...beats) + 10 }
+      : { min: 0, max: 200 };
 
     const chart = new Chart(ctx, {
       type: 'line',
       data: {
         labels: reducedLabels,
         datasets: [{
-          label: 'BPM',
           data: reducedData,
-          borderColor: '#EF5350',
-          backgroundColor: 'rgba(239, 83, 80, 0.1)',
+          borderColor: THEME.hr,
+          backgroundColor: 'rgba(239, 83, 80, 0.08)',
           borderWidth: 2,
           pointRadius: 0,
           fill: true,
-          tension: 0.3,
-        }]
+          tension: 0.25,
+        }],
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 800, easing: 'easeOutQuart' },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: '#161B22',
-            titleColor: '#F0F6FC',
-            bodyColor: '#8B949E',
-            borderColor: '#30363D',
-            borderWidth: 1,
-            cornerRadius: 8,
-            displayColors: false,
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.y} BPM`
-            }
-          }
-        },
-        scales: {
-          x: {
-            display: true,
-            ticks: { color: '#6E7681', maxTicksLimit: 6, font: { size: 10 } },
-            grid: { color: '#21262D' }
-          },
-          y: {
-            display: true,
-            // Math.min() de array vazio é Infinity: num treino só com cadência o eixo
-            // ficava com min: Infinity e o gráfico não desenhava nada.
-            ...(() => {
-              const beats = reducedData.filter(v => v > 0);
-              return beats.length
-                ? { min: Math.max(0, Math.min(...beats) - 10), max: Math.max(...beats) + 10 }
-                : { min: 0, max: 200 };
-            })(),
-            ticks: { color: '#6E7681', font: { size: 10 } },
-            grid: { color: '#21262D' }
-          }
-        }
-      }
+      options: lineOptions(yAxis, 'bpm'),
     });
 
     this.charts.push(chart);
     return chart;
   }
 
-  /**
-   * Gráfico de cadência (RPM) ao longo do tempo.
-   */
+  /** Cadência ao longo do treino. */
   renderCadenceChart(canvasId, summary) {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
 
-    const points = summary.dataPoints;
+    const points = summary.dataPoints || [];
     const labels = points.map(p => this._formatTimestamp(p.timestamp));
-    const rpmData = points.map(p => p.rpm);
-
-    const { reducedLabels, reducedData } = this._reduceData(labels, rpmData, 300);
+    const { reducedLabels, reducedData } = this._reduceData(labels, points.map(p => p.rpm), 300);
 
     const chart = new Chart(ctx, {
       type: 'line',
       data: {
         labels: reducedLabels,
         datasets: [{
-          label: 'RPM',
           data: reducedData,
-          borderColor: '#4FC3F7',
-          backgroundColor: 'rgba(79, 195, 247, 0.1)',
-          borderWidth: 2,
+          borderColor: THEME.rpm,
+          borderWidth: 1.5,
           pointRadius: 0,
-          fill: true,
-          tension: 0.3,
-        }]
+          fill: false,
+          tension: 0.25,
+        }],
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 800, easing: 'easeOutQuart' },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: '#161B22',
-            titleColor: '#F0F6FC',
-            bodyColor: '#8B949E',
-            borderColor: '#30363D',
-            borderWidth: 1,
-            cornerRadius: 8,
-            displayColors: false,
-            callbacks: {
-              label: (ctx) => `${ctx.parsed.y} RPM`
-            }
-          }
-        },
-        scales: {
-          x: {
-            display: true,
-            ticks: { color: '#6E7681', maxTicksLimit: 6, font: { size: 10 } },
-            grid: { color: '#21262D' }
-          },
-          y: {
-            display: true,
-            min: 0,
-            ticks: { color: '#6E7681', font: { size: 10 } },
-            grid: { color: '#21262D' }
-          }
-        }
-      }
+      options: lineOptions({ min: 0 }, 'rpm'),
     });
 
     this.charts.push(chart);
     return chart;
   }
 
-  /**
-   * Gráfico de barras horizontais: tempo em cada zona.
-   */
+  /** Barras horizontais: minutos em cada zona, na cor da zona. */
   renderZoneChart(canvasId, summary) {
     const ctx = document.getElementById(canvasId)?.getContext('2d');
     if (!ctx) return;
@@ -167,58 +136,35 @@ export class WorkoutCharts {
     // guarda, Object.values(undefined) derrubava a tela de resumo inteira.
     const zoneTime = summary.zoneTime || {};
 
-    const labels = ZONES.map(z => z.name);
-    const data = ZONES.map(z => Math.round((zoneTime[z.id] || 0) / 60 * 10) / 10);
-    const colors = ZONES.map(z => z.color);
-
     const chart = new Chart(ctx, {
       type: 'bar',
       data: {
-        labels,
+        labels: ZONES.map(z => `Z${z.id}`),
         datasets: [{
-          data,
-          backgroundColor: colors.map(c => c + 'CC'),
-          borderColor: colors,
-          borderWidth: 1,
-          borderRadius: 6,
-          barPercentage: 0.6,
-        }]
+          data: ZONES.map(z => Math.round((zoneTime[z.id] || 0) / 60 * 10) / 10),
+          backgroundColor: ZONES.map(z => z.color),
+          borderRadius: 2,
+          barPercentage: 0.7,
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         indexAxis: 'y',
-        animation: { duration: 1000, easing: 'easeOutQuart' },
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: '#161B22',
-            titleColor: '#F0F6FC',
-            bodyColor: '#8B949E',
-            borderColor: '#30363D',
-            borderWidth: 1,
-            cornerRadius: 8,
             callbacks: {
-              label: (ctx) => `${ctx.parsed.x} min`
-            }
-          }
+              title: (items) => `${items[0].label} · ${ZONES[items[0].dataIndex].name}`,
+              label: (c) => `${c.parsed.x} min`,
+            },
+          },
         },
         scales: {
-          x: {
-            display: true,
-            ticks: {
-              color: '#6E7681',
-              font: { size: 10 },
-              callback: (v) => `${v}m`
-            },
-            grid: { color: '#21262D' }
-          },
-          y: {
-            ticks: { color: '#F0F6FC', font: { size: 11, weight: '500' } },
-            grid: { display: false }
-          }
-        }
-      }
+          x: { ticks: { callback: (v) => `${v} min`, maxTicksLimit: 5 } },
+          y: { grid: { display: false }, ticks: { color: '#C9CDD2', font: { weight: '600' } } },
+        },
+      },
     });
 
     this.charts.push(chart);
@@ -248,55 +194,37 @@ export class WorkoutCharts {
 
     const labels = trend.points.map(p =>
       new Date(p.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
-    const data = trend.points.map(p => p.avgBPM);
 
     return new Chart(ctx, {
       type: 'line',
       data: {
         labels,
         datasets: [{
-          label: 'FC média',
-          data,
-          borderColor: '#4FC3F7',
-          backgroundColor: 'rgba(79, 195, 247, 0.12)',
+          data: trend.points.map(p => p.avgBPM),
+          borderColor: THEME.trend,
           borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: '#4FC3F7',
-          fill: true,
-          tension: 0.25,
-        }]
+          pointRadius: 3,
+          pointBackgroundColor: THEME.trend,
+          fill: false,
+          tension: 0.2,
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 800, easing: 'easeOutQuart' },
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: '#161B22',
-            titleColor: '#F0F6FC',
-            bodyColor: '#8B949E',
-            borderColor: '#30363D',
-            borderWidth: 1,
-            cornerRadius: 8,
-            displayColors: false,
             callbacks: {
-              label: (c) => {
-                const point = trend.points[c.dataIndex];
-                return `${c.parsed.y} bpm · ${point.intensity}% de intensidade`;
-              }
-            }
-          }
+              label: (c) => `${c.parsed.y} bpm · ${trend.points[c.dataIndex].intensity}% de intensidade`,
+            },
+          },
         },
         scales: {
-          x: { grid: { display: false }, ticks: { color: '#8B949E', font: { size: 10 } } },
-          y: {
-            // Not zero-based on purpose: the interesting movement is a handful of bpm,
-            // and a zero baseline would flatten it into a straight line.
-            beginAtZero: false,
-            grid: { color: '#21262D' },
-            ticks: { color: '#8B949E', font: { size: 10 } },
-          },
+          x: { grid: { display: false } },
+          // Not zero-based on purpose: the interesting movement is a handful of bpm,
+          // and a zero baseline would flatten it into a straight line.
+          y: { beginAtZero: false, ticks: { maxTicksLimit: 5 } },
         },
       },
     });
