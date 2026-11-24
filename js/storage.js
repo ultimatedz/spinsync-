@@ -166,6 +166,8 @@ const DEFAULT_SETTINGS = {
   weeklyGoal: 3,
   /** Circunferência da roda em mm, para velocidade e distância. 2096 = 700x23c. */
   wheelCircumferenceMm: 2096,
+  /** Marcha virtual da distância estimada pela cadência. Ver goals.js VIRTUAL_GEARS. */
+  virtualGear: 'media',
   /** Degraus da escada que o usuário decidiu pular. Ver js/progression.js. */
   skippedSteps: [],
 };

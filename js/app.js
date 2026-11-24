@@ -11,6 +11,8 @@ import * as Haptics from './haptics.js';
 import { buildTCX, tcxFilename } from './tcx-export.js';
 import * as AutoBackup from './auto-backup.js';
 import * as WorkoutService from './workout-service.js';
+import * as Personalization from './personalization.js';
+import * as Goals from './goals.js';
 
 /** Sem cadência por este tempo com o sensor conectado = parou de pedalar. */
 const AUTO_PAUSE_AFTER_MS = 8000;
@@ -59,6 +61,11 @@ class SpinSyncApp {
     // Persistence
     this.persistCounter = 0;
     this.planFilter = 'all';
+
+    // Treino de hoje (personalization.js) e a prontidão lida do Health Connect, que chega
+    // depois, de forma assíncrona, e pode mudar a recomendação.
+    this.todayRecommendation = null;
+    this._readiness = null;
 
     this.init();
   }
@@ -111,9 +118,29 @@ class SpinSyncApp {
     // Navigation — bottom-nav destinations are roots, so they reset the back stack.
     const showRoot = (id) => { this.viewStack = []; this.showView(id, { push: false }); };
     document.getElementById('nav-home')?.addEventListener('click', () => showRoot('home'));
-    document.getElementById('nav-history')?.addEventListener('click', () => showRoot('history'));
+    document.getElementById('nav-progress')?.addEventListener('click', () => showRoot('analytics'));
     document.getElementById('nav-profile')?.addEventListener('click', () => showRoot('profile'));
-    document.getElementById('nav-analytics')?.addEventListener('click', () => showRoot('analytics'));
+
+    // Progresso tem duas faces — visão geral e lista de treinos — sob uma aba só.
+    document.querySelectorAll('[data-progress]').forEach(btn => {
+      btn.addEventListener('click', () => showRoot(btn.dataset.progress));
+    });
+
+    // Treino de hoje
+    document.getElementById('btn-today-start')?.addEventListener('click', () => this.startToday());
+    document.getElementById('btn-today-detail')?.addEventListener('click', () => {
+      if (this.todayRecommendation?.plan) this.openPlanDetail(this.todayRecommendation.plan);
+    });
+    document.getElementById('btn-calibration-apply')?.addEventListener('click', () => this.applyCalibration());
+    document.getElementById('btn-calibration-dismiss')?.addEventListener('click', () => this.dismissCalibration());
+    document.getElementById('btn-plan-original')?.addEventListener('click', () => {
+      const base = Plans.getAllPlans().find(p => p.id === this.selectedPlan?.id);
+      if (base) this.showPlanDetail(base);
+    });
+    document.getElementById('setting-gear')?.addEventListener('change', (e) => {
+      Storage.saveSettings({ virtualGear: e.target.value });
+      this.updateGearHint();
+    });
 
     // Analytics Filters
     document.querySelectorAll('.filter-btn').forEach(btn => {
@@ -244,14 +271,13 @@ class SpinSyncApp {
     document.getElementById('btn-resume-workout')?.addEventListener('click', () => this.resumeFromRecovery());
     document.getElementById('btn-discard-workout')?.addEventListener('click', () => this.discardRecovery());
 
-    // Plan filter tabs
-    document.querySelectorAll('.plan-filter-tab').forEach(tab => {
-      tab.addEventListener('click', (e) => {
-        document.querySelectorAll('.plan-filter-tab').forEach(t => t.classList.remove('active'));
-        e.target.classList.add('active');
-        this.planFilter = e.target.dataset.level;
-        this.renderPlanCards();
-      });
+    // As abas de categoria são desenhadas por renderPlanLibrary (dependem de existirem
+    // treinos personalizados); um listener delegado sobrevive a cada redesenho.
+    document.getElementById('plan-filter-tabs')?.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-category]');
+      if (!tab) return;
+      this.planFilter = tab.dataset.category;
+      this.renderPlanLibrary();
     });
   }
 
@@ -285,7 +311,7 @@ class SpinSyncApp {
         break;
       case 'home':
         this.updateHomeView();
-        this.renderPlanCards();
+        this.renderPlanLibrary();
         break;
       case 'history':
         this.renderHistory();
@@ -305,8 +331,15 @@ class SpinSyncApp {
   }
 
   updateBottomNav() {
+    // Três abas para mais telas que isso: cada tela acende a aba a que pertence.
+    const TAB_OF = {
+      home: 'home', 'plan-detail': 'home', 'plan-creator': 'home',
+      analytics: 'progress', history: 'progress',
+      profile: 'profile',
+    };
+    const tab = TAB_OF[this.currentView];
     document.querySelectorAll('.nav-item').forEach(item => {
-      const isCurrent = item.id === `nav-${this.currentView}`;
+      const isCurrent = !!tab && item.id === `nav-${tab}`;
       item.classList.toggle('active', isCurrent);
       if (isCurrent) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
@@ -361,10 +394,21 @@ class SpinSyncApp {
     set('setting-autopause', settings.autoPause);
     set('setting-goal', settings.weeklyGoal, 'value');
     set('setting-wheel', settings.wheelCircumferenceMm, 'value');
+    set('setting-gear', settings.virtualGear || 'media', 'value');
+    this.updateGearHint();
     this.updateProgressionSettings();
     // O modo demo é de sessão, não persistido — mas o interruptor e os banners precisam
     // refletir o estado atual ao entrar no perfil.
     this.updateDemoBanner();
+  }
+
+  /** Traduz a marcha virtual em algo palpável: a velocidade que ela implica. */
+  updateGearHint() {
+    const el = document.getElementById('setting-gear-desc');
+    if (!el) return;
+    const m = Goals.metersPerRev();
+    el.textContent = `Sem sensor de roda, a distância sai das pedaladas: ${String(m).replace('.', ',')} m `
+      + `cada uma, cerca de ${Goals.speedAt(80, m)} km/h a 80 rpm. Serve para comparar você com você mesmo.`;
   }
 
   /**
@@ -765,16 +809,17 @@ class SpinSyncApp {
     const profile = Storage.getProfile();
     if (!profile) return;
 
-    const greeting = document.getElementById('home-greeting');
-    if (greeting) {
-      const hour = new Date().getHours();
-      let period = 'Bom dia';
-      if (hour >= 12 && hour < 18) period = 'Boa tarde';
-      else if (hour >= 18) period = 'Boa noite';
-      greeting.textContent = `${period}, ${profile.name}!`;
+    const date = document.getElementById('home-date');
+    if (date) {
+      const label = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'short' });
+      date.textContent = label.charAt(0).toUpperCase() + label.slice(1);
     }
+    const greeting = document.getElementById('home-greeting');
+    if (greeting) greeting.textContent = profile.name ? `Olá, ${profile.name}` : 'Treinar';
 
-    this.renderGoalCard();
+    this.renderToday();
+    this.renderCalibration();
+    this.renderWeekCard();
     // Assíncrono: lê do Health Connect, e o card aparece sozinho quando houver dado.
     this.renderReadiness().catch(() => {});
     this.renderCoachCard();
@@ -783,11 +828,102 @@ class SpinSyncApp {
   }
 
   /**
-   * Prontidão: o que o relógio mediu dormindo, cruzado com a carga da semana.
+   * O treino de hoje, com a razão por escrito.
+   *
+   * Redesenhado de novo quando a prontidão chega do Health Connect: uma noite ruim muda a
+   * sugestão, e ela não pode depender de o usuário recarregar a tela.
+   */
+  renderToday() {
+    const card = document.getElementById('today-card');
+    if (!card) return;
+
+    let rec;
+    try {
+      rec = Personalization.recommend(Personalization.getAthleteContext(), this._readiness);
+    } catch (e) {
+      // A home nunca pode cair por causa da recomendação: o resto da tela segue útil.
+      console.error('[App] recommend falhou:', e);
+      rec = null;
+    }
+    this.todayRecommendation = rec;
+    if (!rec?.plan) { card.hidden = true; return; }
+    card.hidden = false;
+
+    const plan = rec.plan;
+    const zoneCalc = this.zoneCalcForProfile();
+    // A zona e a cadência "do treino" são as da fase principal: a mais longa entre o
+    // aquecimento e a volta à calma. É o número que decide se dá para encarar.
+    const main = plan.phases.slice(1, -1).reduce((a, b) => (b.duration > (a?.duration || 0) ? b : a), null)
+      || plan.phases[0];
+    const bpm = Plans.resolvePhaseBPM(main, zoneCalc);
+
+    const categoryName = Plans.getPlanCategory(plan).name;
+    document.getElementById('today-kind').textContent = rec.title;
+    const tag = document.getElementById('today-category');
+    tag.textContent = categoryName;
+    tag.hidden = categoryName.toLowerCase() === rec.title.toLowerCase();
+    document.getElementById('today-plan-name').textContent = plan.name;
+    document.getElementById('today-meta').textContent = [
+      Plans.formatDuration(Plans.getPlanDuration(plan)),
+      `Z${main.zone} ${bpm.min}–${bpm.max} bpm`,
+      `${main.rpmMin}–${main.rpmMax} rpm`,
+    ].join(' · ');
+    document.getElementById('today-reasons').innerHTML = rec.reasons
+      .map(r => `<li>${escapeHtml(r)}</li>`).join('');
+  }
+
+  startToday() {
+    const plan = this.todayRecommendation?.plan;
+    if (!plan) return;
+    this.selectedPlan = plan;
+    this.startGuidedWorkout();
+  }
+
+  /**
+   * FC máxima observada acima da estimada por idade: sugere atualizar o perfil.
+   *
+   * Todas as zonas saem desse número, então um valor real vale mais do que qualquer ajuste
+   * de treino. Só sugere: um pico espúrio do sensor não pode mudar as zonas sozinho.
+   */
+  renderCalibration() {
+    const card = document.getElementById('calibration-card');
+    if (!card) return;
+    const profile = Storage.getProfile();
+    const s = Personalization.maxHRSuggestion(profile, Storage.getWorkouts().filter(Storage.countsAsTraining));
+    const dismissed = Storage.getSettings().dismissedMaxHR || 0;
+    if (!s || s.observed <= dismissed) { card.hidden = true; this._calibration = null; return; }
+
+    this._calibration = s;
+    card.hidden = false;
+    const when = new Date(s.date).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' });
+    document.getElementById('calibration-text').textContent =
+      `Sua FC chegou a ${s.observed} bpm em ${when}, acima dos ${s.estimate} bpm estimados pela idade. `
+      + 'Usar o valor real deixa todas as zonas mais precisas.';
+  }
+
+  applyCalibration() {
+    const s = this._calibration;
+    const profile = Storage.getProfile();
+    if (!s || !profile) return;
+    if (Storage.saveProfile({ ...profile, maxHR: s.observed })) {
+      this.toast(`FC máxima atualizada para ${s.observed} bpm.`, 'success');
+    }
+    this.updateHomeView();
+  }
+
+  dismissCalibration() {
+    // Lembra o valor recusado: só volta a sugerir se aparecer um pico ainda maior.
+    if (this._calibration) Storage.saveSettings({ dismissedMaxHR: this._calibration.observed });
+    this.renderCalibration();
+  }
+
+  /**
+   * Prontidão: o que o relógio mediu dormindo, cruzado com a carga recente.
    *
    * Nenhuma das métricas vale sozinha — o valor absoluto de RMSSD varia enormemente entre
    * pessoas. O que informa é o desvio em relação à sua própria linha de base, e o
-   * cruzamento: carga subindo com HRV caindo é o padrão que antecede estagnação.
+   * cruzamento: carga subindo com HRV caindo é o padrão que antecede estagnação. Os
+   * limiares vivem em personalization.readinessFlags, os mesmos que a recomendação usa.
    */
   async renderReadiness() {
     const card = document.getElementById('readiness-card');
@@ -797,84 +933,77 @@ class SpinSyncApp {
     if (!recovery) { card.hidden = true; return; }
     card.hidden = false;
 
-    // Desvios percentuais em relação à base. HRV caindo e FC de repouso subindo apontam
-    // para o mesmo lado: recuperação incompleta.
-    const hrvDrop = recovery.hrv && recovery.hrvBaseline
-      ? (recovery.hrvBaseline - recovery.hrv) / recovery.hrvBaseline : 0;
-    const rhrRise = recovery.restingHR && recovery.restingHRBaseline
-      ? recovery.restingHR - recovery.restingHRBaseline : 0;
-    const shortSleep = recovery.sleepHours !== null && recovery.sleepHours < 6;
+    const readiness = Personalization.readinessFlags(recovery, Analytics.getTrainingLoad());
+    const changed = readiness.level !== this._readiness?.level;
+    this._readiness = readiness;
+    if (changed) this.renderToday();
 
-    const load = Analytics.getTrainingLoad();
-    const loadSpike = load?.ratio >= 1.5;
+    const verdict = readiness.level === 'red' ? 'Incompleta'
+      : readiness.level === 'yellow' ? 'Parcial'
+        : 'Boa';
+    const verdictEl = document.getElementById('readiness-verdict');
+    verdictEl.textContent = verdict;
+    verdictEl.dataset.level = readiness.level;
 
-    let flags = 0;
-    if (hrvDrop > 0.2) flags += 2;
-    else if (hrvDrop > 0.1) flags += 1;
-    if (rhrRise >= 5) flags += 2;
-    else if (rhrRise >= 3) flags += 1;
-    if (shortSleep) flags += 1;
-    if (loadSpike) flags += 1;
-
-    const verdict = flags >= 3 ? 'Recuperação incompleta'
-      : flags >= 1 ? 'Recuperação parcial'
-        : 'Pronto para treinar';
-    const color = flags >= 3 ? 'var(--zone-4)' : flags >= 1 ? 'var(--zone-3)' : 'var(--zone-2)';
-
-    document.getElementById('readiness-verdict').textContent = verdict;
-    document.getElementById('readiness-dot').style.background = color;
-
-    const reasons = [];
-    if (hrvDrop > 0.1) reasons.push(`variabilidade ${Math.round(hrvDrop * 100)}% abaixo da sua média`);
-    if (rhrRise >= 3) reasons.push(`FC de repouso ${rhrRise} bpm acima do normal`);
-    if (shortSleep) reasons.push(`${recovery.sleepHours} h de sono`);
-    if (loadSpike) reasons.push(`carga dos últimos 7 dias ${load.ratio}× a média`);
-
-    document.getElementById('readiness-text').textContent = reasons.length
-      ? `${reasons.join(', ')}. ${flags >= 3 ? 'Considere um treino leve hoje.' : 'Dá para treinar, sem forçar o topo.'}`
+    document.getElementById('readiness-text').textContent = readiness.reasons.length
+      ? `${readiness.reasons.join(', ')}. ${readiness.level === 'red' ? 'Prefira um treino leve hoje.' : 'Dá para treinar, sem forçar o topo.'}`
       : 'Sinais noturnos dentro da sua média.';
 
     // Valores vêm do Health Connect como números, então não passam por escapeHtml.
     const metrics = [];
     if (recovery.hrv) metrics.push(`<span>HRV <strong>${recovery.hrv} ms</strong></span>`);
     if (recovery.restingHR) metrics.push(`<span>Repouso <strong>${recovery.restingHR} bpm</strong></span>`);
-    if (recovery.sleepHours !== null) metrics.push(`<span>Sono <strong>${recovery.sleepHours} h</strong></span>`);
+    if (recovery.sleepHours !== null) metrics.push(`<span>Sono <strong>${formatDecimal(recovery.sleepHours)} h</strong></span>`);
     document.getElementById('readiness-metrics').innerHTML = metrics.join('');
   }
 
   /**
-   * Weekly goal progress, and the run of weeks that met it.
+   * A semana: treinos contra a meta, minutos e distância.
    *
-   * The analytics screen answers "what did I do"; this answers "am I on track", which is
-   * the question that actually gets someone back on the bike on a Tuesday.
+   * A tela de progresso responde "o que eu fiz"; esta responde "estou no caminho", que é
+   * a pergunta que põe alguém de volta na bike numa terça-feira.
    */
-  renderGoalCard() {
+  renderWeekCard() {
     const card = document.getElementById('goal-card');
     if (!card) return;
 
     const { weeklyGoal } = Storage.getSettings();
-    if (!weeklyGoal) { card.hidden = true; return; }
-
-    const { done, streak, met } = Analytics.getGoalProgress(weeklyGoal);
+    const { done, streak, met } = Analytics.getGoalProgress(weeklyGoal || 0);
     card.hidden = false;
+
+    const weekStart = Analytics.startOfWeek();
+    const week = Storage.getWorkouts()
+      .filter(Storage.countsAsTraining)
+      .filter(w => new Date(w.date) >= weekStart);
+    const minutes = Math.round(week.reduce((s, w) => s + (w.durationSeconds || 0), 0) / 60);
+    const mPerRev = Goals.metersPerRev();
+    const km = week.reduce((s, w) => s + Goals.workoutDistance(w, mPerRev).m, 0) / 1000;
+
+    document.getElementById('week-sessions').textContent = done;
+    document.getElementById('week-sessions-unit').textContent = weeklyGoal
+      ? `de ${weeklyGoal} treinos` : (done === 1 ? 'treino' : 'treinos');
+    document.getElementById('week-minutes').textContent = minutes;
+    document.getElementById('week-km').textContent = formatDecimal(km);
+
+    const fill = document.getElementById('goal-bar-fill');
+    if (fill) {
+      fill.style.width = weeklyGoal ? `${Math.min(100, (done / weeklyGoal) * 100)}%` : '0%';
+      fill.parentElement.hidden = !weeklyGoal;
+    }
 
     const title = document.getElementById('goal-title');
     if (title) {
-      const remaining = weeklyGoal - done;
-      title.textContent = met
-        ? `Meta da semana batida — ${done} de ${weeklyGoal}`
-        : `${done} de ${weeklyGoal} esta semana · falta${remaining > 1 ? 'm' : ''} ${remaining}`;
+      const remaining = Math.max(0, (weeklyGoal || 0) - done);
+      title.textContent = !weeklyGoal ? 'Sem meta semanal. Defina uma no Perfil.'
+        : met ? 'Meta da semana cumprida.'
+          : `Falta${remaining > 1 ? 'm' : ''} ${remaining} para a meta.`;
     }
 
-    const fill = document.getElementById('goal-bar-fill');
-    if (fill) fill.style.width = `${Math.min(100, (done / weeklyGoal) * 100)}%`;
-
-    // Only worth showing once it is a run rather than a single week.
+    // Só vale mostrar quando já é uma sequência, não uma semana isolada.
     const streakEl = document.getElementById('goal-streak');
     if (streakEl) {
       streakEl.hidden = streak < 2;
-      const value = document.getElementById('goal-streak-value');
-      if (value) value.textContent = streak;
+      streakEl.textContent = `${streak} semanas seguidas`;
     }
   }
 
@@ -1201,7 +1330,7 @@ class SpinSyncApp {
     const profile = Storage.getProfile();
     if (!profile) return;
 
-    this.recorder = new WorkoutRecorder(profile);
+    this.recorder = new WorkoutRecorder(profile, { metersPerRev: Goals.metersPerRev() });
     this.realtimeBPMHistory = [];
     this.realtimeRPMHistory = [];
 
@@ -1210,12 +1339,17 @@ class SpinSyncApp {
     this.updateWorkoutRPM(0);
     document.getElementById('workout-timer').textContent = '00:00:00';
     document.getElementById('workout-calories').textContent = '0';
+    document.getElementById('workout-distance').textContent = '0,0';
+    document.getElementById('workout-avg-bpm').textContent = '--';
+    const speedCard = document.getElementById('workout-speed-card');
+    if (speedCard) speedCard.hidden = true;
+    this.updateZoneBar();
 
     // Reset pause button
     const pauseBtn = document.getElementById('btn-pause');
     if (pauseBtn) {
       pauseBtn.classList.remove('paused');
-      pauseBtn.innerHTML = '⏸ Pausar';
+      pauseBtn.textContent = 'Pausar';
     }
 
     // Show workout view
@@ -1272,7 +1406,9 @@ class SpinSyncApp {
 
     // Update zone
     this.updateZoneBar();
-    this.updateWheelMetrics();
+    this.updateDistanceMetric('workout-distance', 'workout-distance-label');
+    const avgEl = document.getElementById('workout-avg-bpm');
+    if (avgEl) avgEl.textContent = this.recorder.getAvgBPM() || '--';
 
     this.checkAutoPause();
     this.mirrorToWatch();
@@ -1364,22 +1500,12 @@ class SpinSyncApp {
       el.classList.toggle('stale', !!stale && bpm > 0);
     }
 
-    // Update circle color based on zone
-    const circle = document.getElementById('bpm-circle');
-    if (circle && this.recorder) {
+    // A cor da zona vai numa variável CSS; o estilo decide onde ela aparece. Antes eram
+    // gradientes e bordas inline, recalculados a cada batimento.
+    const block = document.getElementById('bpm-circle');
+    if (block && this.recorder) {
       const zone = this.recorder.getCurrentZone();
-      if (zone) {
-        circle.style.background = `radial-gradient(circle, ${zone.color}20 0%, ${zone.color}08 70%)`;
-        circle.style.border = `2px solid ${zone.color}40`;
-        el.style.color = zone.color;
-
-        // Update glow
-        circle.style.setProperty('--glow-color', zone.color);
-      } else {
-        circle.style.background = `radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%)`;
-        circle.style.border = `2px solid var(--border-color)`;
-        el.style.color = 'var(--text-primary)';
-      }
+      block.style.setProperty('--zone-color', zone ? zone.color : 'var(--text)');
     }
   }
 
@@ -1388,45 +1514,51 @@ class SpinSyncApp {
     if (el) el.textContent = rpm || '--';
   }
 
-  /** Revela e atualiza velocidade/distância, se o sensor de roda estiver mandando. */
-  updateWheelMetrics() {
-    if (!this.recorder?.distanceM) return;
+  /**
+   * Distância ao vivo: a do sensor de roda quando há, senão a estimada pela cadência.
+   *
+   * O rótulo muda junto — "km est." nunca pode aparecer sem o "est.", ou o número passaria
+   * por medida. A velocidade só existe com roda de verdade, então só aparece nesse caso.
+   */
+  updateDistanceMetric(valueId, labelId) {
+    const r = this.recorder;
+    if (!r) return;
+    const real = r.distanceM > 0;
+    const value = document.getElementById(valueId);
+    if (value) value.textContent = formatDecimal((real ? r.distanceM : r.estDistanceM) / 1000, real ? 2 : 1);
+    const label = labelId && document.getElementById(labelId);
+    if (label) label.textContent = real ? 'Distância · km' : 'Distância · km est.';
 
     const speedCard = document.getElementById('workout-speed-card');
-    const distCard = document.getElementById('workout-distance-card');
-    if (speedCard) speedCard.hidden = false;
-    if (distCard) distCard.hidden = false;
-
-    const speed = document.getElementById('workout-speed');
-    const dist = document.getElementById('workout-distance');
-    if (speed) speed.textContent = (this.recorder.currentSpeed || 0).toFixed(1);
-    if (dist) dist.textContent = (this.recorder.distanceM / 1000).toFixed(2);
+    if (speedCard && real) {
+      speedCard.hidden = false;
+      const speed = document.getElementById('workout-speed');
+      if (speed) speed.textContent = formatDecimal(r.currentSpeed || 0, 1);
+    }
   }
 
+  /** Cinco segmentos, acesos até a zona atual; a cor da zona vem do token do CSS. */
   updateZoneBar() {
     if (!this.recorder) return;
     const zone = this.recorder.getCurrentZone();
     const pct = this.recorder.getZonePercentage();
 
-    const fill = document.getElementById('zone-bar-fill');
+    document.querySelectorAll('#zone-segments > span').forEach((seg, i) => {
+      seg.classList.toggle('on', !!zone && i < zone.id);
+      seg.classList.toggle('current', !!zone && i === zone.id - 1);
+    });
+
     const name = document.getElementById('zone-name');
     const pctEl = document.getElementById('zone-pct');
-
-    if (fill) {
-      fill.style.width = `${Math.min(100, pct)}%`;
-      fill.style.backgroundColor = zone ? zone.color : 'var(--text-tertiary)';
-    }
     if (name) {
-      name.textContent = zone ? `Z${zone.id} ${zone.name}` : 'Sem dados';
-      name.style.color = zone ? zone.color : 'var(--text-tertiary)';
+      name.textContent = zone ? `Z${zone.id} · ${zone.name}` : 'Sem frequência cardíaca';
+      name.style.color = zone ? zone.color : '';
     }
     if (pctEl) {
       // O rótulo tem que seguir o modelo em uso: com FC de repouso no perfil o número é
-      // % da *reserva*, não da máxima — 15 a 25 pontos de diferença. Dizer "FC máx" nos
-      // dois casos era simplesmente falso.
-      pctEl.textContent = this.recorder.zoneCalc.isReserveBased()
-        ? `${pct}% da reserva`
-        : `${pct}% FC máx`;
+      // % da *reserva*, não da máxima — 15 a 25 pontos de diferença.
+      pctEl.textContent = !zone ? ''
+        : this.recorder.zoneCalc.isReserveBased() ? `${pct}% da reserva` : `${pct}% da FC máx`;
     }
   }
 
@@ -1442,13 +1574,12 @@ class SpinSyncApp {
 
     if (this.realtimeBPMHistory.length < 2) return;
 
-    // Draw BPM line (red)
-    this.drawLine(ctx, this.realtimeBPMHistory, w, h, '#EF5350', 60, 200);
-
-    // Draw RPM line (blue)
-    this.drawLine(ctx, this.realtimeRPMHistory, w, h, '#4FC3F7', 0, 120);
+    this.drawLine(ctx, this.realtimeRPMHistory, w, h, CHART_RPM, 0, 120);
+    // FC por cima: é a linha que importa.
+    this.drawLine(ctx, this.realtimeBPMHistory, w, h, CHART_HR, 60, 200);
   }
 
+  /** Só a linha, sem área preenchida: dois preenchimentos sobrepostos viravam borrão. */
   drawLine(ctx, data, w, h, color, minVal, maxVal) {
     const len = data.length;
     if (len < 2) return;
@@ -1458,8 +1589,9 @@ class SpinSyncApp {
 
     ctx.beginPath();
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
 
     for (let i = 0; i < len; i++) {
       const x = (60 - len + i) * stepX;
@@ -1468,13 +1600,6 @@ class SpinSyncApp {
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
-
-    // Fill under line
-    ctx.lineTo((60 - 1) * stepX, h);
-    ctx.lineTo((60 - len) * stepX, h);
-    ctx.closePath();
-    ctx.fillStyle = color + '15';
-    ctx.fill();
   }
 
   /**
@@ -1625,7 +1750,7 @@ class SpinSyncApp {
     const btn = document.getElementById(id);
     if (btn) {
       btn.classList.toggle('paused', paused);
-      btn.innerHTML = paused ? '▶ Retomar' : '⏸ Pausar';
+      btn.textContent = paused ? 'Retomar' : 'Pausar';
     }
     // Todo caminho de pausa (toque, auto-pause, retomada pelo pedal) passa por aqui.
     this.mirrorToWatch(true);
@@ -1733,11 +1858,21 @@ class SpinSyncApp {
     const timeStr = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
     document.getElementById('summary-date-text').textContent = `${dateStr} · ${timeStr}`;
+    document.getElementById('summary-title').textContent = summary.planName || 'Treino livre';
 
     // Hero stats
-    document.getElementById('summary-duration').textContent = summary.durationFormatted;
+    document.getElementById('summary-duration').textContent =
+      summary.durationFormatted?.replace(/^00:/, '') || '--';
     document.getElementById('summary-calories').textContent = summary.calories;
     document.getElementById('summary-avg-bpm').textContent = summary.avgBPM || '--';
+
+    // Distância: medida quando houve roda, estimada pela cadência quando não.
+    const dist = Goals.workoutDistance(summary);
+    document.getElementById('summary-distance').textContent =
+      dist.m > 0 ? formatDecimal(dist.m / 1000, dist.estimated ? 1 : 2) : '--';
+    document.getElementById('summary-distance-label').textContent = dist.estimated ? 'km est.' : 'km';
+
+    this.renderSummaryMilestones(summary);
 
     // Stat cards
     document.getElementById('stat-avg-bpm').textContent = summary.avgBPM || '--';
@@ -1750,8 +1885,9 @@ class SpinSyncApp {
     document.getElementById('stat-distance-card').hidden = !hasDistance;
     document.getElementById('stat-speed-card').hidden = !hasDistance;
     if (hasDistance) {
-      document.getElementById('stat-distance').textContent = (summary.distanceM / 1000).toFixed(2);
-      document.getElementById('stat-avg-speed').textContent = summary.avgSpeedKmh || '--';
+      document.getElementById('stat-distance').textContent = `${formatDecimal(summary.distanceM / 1000, 2)} km`;
+      document.getElementById('stat-avg-speed').textContent = summary.avgSpeedKmh
+        ? `${formatDecimal(summary.avgSpeedKmh, 1)} km/h` : '--';
     }
 
     this.showView('summary');
@@ -1778,6 +1914,23 @@ class SpinSyncApp {
         this.renderZoneAltText(summary);
       }, 100);
     });
+  }
+
+  /**
+   * Marcos de tempo e distância que este treino derrubou.
+   *
+   * Calculado do histórico salvo, então reabrir o resumo dias depois mostra a mesma
+   * conquista — e apagar o treino a desfaz, sem estado para dessincronizar.
+   */
+  renderSummaryMilestones(summary) {
+    const card = document.getElementById('summary-milestones');
+    const list = document.getElementById('summary-milestones-list');
+    if (!card || !list) return;
+    const reached = Storage.countsAsTraining(summary)
+      ? Goals.milestonesReachedBy(summary.id, Goals.getMilestones())
+      : [];
+    card.hidden = reached.length === 0;
+    list.innerHTML = reached.map(t => `<li>${escapeHtml(t)}</li>`).join('');
   }
 
   // ── Perceived effort ──
@@ -1870,7 +2023,7 @@ class SpinSyncApp {
     document.getElementById('load-chronic').textContent = load.chronic ?? '--';
 
     const ratioEl = document.getElementById('load-ratio');
-    ratioEl.textContent = load.ratio ?? '--';
+    ratioEl.textContent = load.ratio == null ? '--' : formatDecimal(load.ratio, 2);
     ratioEl.className = 'load-value'
       + (load.ratio >= 1.5 ? ' danger' : load.ratio >= 1.3 ? ' warn' : '');
 
@@ -1881,11 +2034,11 @@ class SpinSyncApp {
     } else if (load.ratio >= 1.5) {
       // "Salto de volume", não "risco de lesão": a capacidade da razão aguda:crônica de
       // prever lesão é contestada na literatura. O salto em si é o fato observável.
-      hint.textContent = `Seus últimos 7 dias estão ${load.ratio}× a média das quatro semanas anteriores. É um salto grande de volume — vale segurar até o corpo acompanhar.`;
+      hint.textContent = `Seus últimos 7 dias estão ${formatDecimal(load.ratio, 2)}× a média das quatro semanas anteriores. É um salto grande de volume — vale segurar até o corpo acompanhar.`;
     } else if (load.ratio >= 1.3) {
-      hint.textContent = `Últimos 7 dias ${load.ratio}× acima da média. Subida forte, mas ainda dentro do razoável.`;
+      hint.textContent = `Últimos 7 dias ${formatDecimal(load.ratio, 2)}× acima da média. Subida forte, mas ainda dentro do razoável.`;
     } else if (load.ratio < 0.8) {
-      hint.textContent = `Últimos 7 dias a ${load.ratio}× da média. Pode ser descanso planejado — ou perda de ritmo.`;
+      hint.textContent = `Últimos 7 dias a ${formatDecimal(load.ratio, 2)}× da média. Pode ser descanso planejado — ou perda de ritmo.`;
     } else {
       hint.textContent = 'Volume em linha com as últimas semanas.';
     }
@@ -1958,107 +2111,130 @@ class SpinSyncApp {
     this.fitnessChart = this.charts.renderFitnessTrend('chart-fitness', trend);
   }
 
-  renderAnalytics(period = 'week') {
-    const stats = Analytics.getStats(period);
+  renderAnalytics(period = this.analyticsPeriod || 'week') {
+    // O período escolhido sobrevive a sair e voltar da aba; antes voltava sempre para
+    // "Semana" com o botão de outro período ainda aceso.
+    this.analyticsPeriod = period;
+    document.querySelectorAll('.filter-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.period === period);
+    });
 
-    // Update simple fields
+    const stats = Analytics.getStats(period);
+    const mPerRev = Goals.metersPerRev();
+    const km = stats.workouts.reduce((s, w) => s + Goals.workoutDistance(w, mPerRev).m, 0) / 1000;
+
     document.getElementById('analytics-count').textContent = stats.count;
-    document.getElementById('analytics-calories').textContent = stats.totalCalories.toLocaleString();
-    
-    const h = Math.floor(stats.totalDuration / 3600);
-    const m = Math.floor((stats.totalDuration % 3600) / 60);
-    document.getElementById('analytics-duration').textContent = `${h}h ${m}m`;
-    
+    document.getElementById('analytics-calories').textContent = stats.totalCalories.toLocaleString('pt-BR');
+    document.getElementById('analytics-duration').textContent = formatMinutes(stats.totalDuration);
+    document.getElementById('analytics-distance').textContent = `${formatDecimal(km)} km`;
     document.getElementById('analytics-avg-bpm').textContent = stats.avgBPM || '--';
     document.getElementById('analytics-avg-rpm').textContent = stats.avgRPM || '--';
 
-    // Records and the fitness trend read the whole history, so they ignore the period
-    // filter on purpose — a personal best is not a property of the last 7 days.
+    // Metas, carga, recordes e tendência leem o histórico inteiro e ignoram o período de
+    // propósito — um recorde pessoal não é propriedade dos últimos 7 dias.
+    this.renderGoals();
     this.renderTrainingLoad();
     this.renderRecords();
     this.renderFitnessTrend();
 
-    // Render chart
-    const canvas = document.getElementById('chart-analytics-calories');
-    if (this.analyticsChart) {
-      this.analyticsChart.destroy();
-      this.analyticsChart = null;
-    }
-
     // A titled but permanently blank chart card reads as a bug; say what's missing.
     const hasData = stats.chartData.labels.length > 0;
-    const card = document.getElementById('analytics-chart-card');
     const empty = document.getElementById('analytics-empty');
-    if (card) card.hidden = !hasData;
     if (empty) empty.hidden = hasData;
 
-    if (hasData) {
-      // Just a simple bar chart
-      this.analyticsChart = new Chart(canvas, {
-        type: 'bar',
-        data: {
-          labels: stats.chartData.labels,
-          datasets: [{
-            label: 'Calorias (kcal)',
-            data: stats.chartData.calories,
-            backgroundColor: '#EF5350',
-            borderRadius: 4
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false }
-          },
-          scales: {
-            x: { grid: { display: false } },
-            y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } }
-          }
-        }
-      });
-
-      this.renderVolumeChart(stats);
-    }
+    this.renderBarChart('analyticsChart', 'analytics-chart-card', 'chart-analytics-calories',
+      stats.chartData.labels, stats.chartData.calories, 'kcal', CHART_MUTED);
+    this.renderBarChart('volumeChart', 'analytics-volume-card', 'chart-analytics-volume',
+      stats.chartData.labels, stats.chartData.duration || [], 'min', CHART_ACCENT);
   }
 
-  /** Minutos por dia. O agregado já existia em analytics.js e era descartado. */
-  renderVolumeChart(stats) {
-    const card = document.getElementById('analytics-volume-card');
-    const canvas = document.getElementById('chart-analytics-volume');
-    if (!card || !canvas) return;
-
-    if (this.volumeChart) {
-      this.volumeChart.destroy();
-      this.volumeChart = null;
+  /** Um gráfico de barras simples, recriado a cada render (Chart.js não reaproveita canvas). */
+  renderBarChart(field, cardId, canvasId, labels, data, unit, color) {
+    const card = document.getElementById(cardId);
+    const canvas = document.getElementById(canvasId);
+    if (this[field]) {
+      this[field].destroy();
+      this[field] = null;
     }
+    const has = data.some(v => v > 0);
+    if (card) card.hidden = !has;
+    if (!has || !canvas) return;
 
-    const data = stats.chartData.duration || [];
-    const hasVolume = data.some(v => v > 0);
-    card.hidden = !hasVolume;
-    if (!hasVolume) return;
-
-    this.volumeChart = new Chart(canvas, {
+    this[field] = new Chart(canvas, {
       type: 'bar',
-      data: {
-        labels: stats.chartData.labels,
-        datasets: [{
-          label: 'Minutos',
-          data,
-          backgroundColor: '#4FC3F7',
-          borderRadius: 4
-        }]
-      },
+      data: { labels, datasets: [{ data, backgroundColor: color, borderRadius: 2, maxBarThickness: 28 }] },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
+        animation: { duration: 250 },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (c) => `${c.parsed.y} ${unit}` } },
+        },
         scales: {
           x: { grid: { display: false } },
-          y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } }
-        }
-      }
+          y: { beginAtZero: true, ticks: { maxTicksLimit: 4 } },
+        },
+      },
     });
+  }
+
+  /**
+   * Desafio do mês e próximas marcas (goals.js).
+   *
+   * Duas réguas de propósito: o desafio é renovável (todo mês tem um), as marcas são
+   * permanentes (cada uma cai uma vez). Juntas dão um motivo para hoje e um para o ano.
+   */
+  renderGoals() {
+    const mPerRev = Goals.metersPerRev();
+    const counted = Storage.getWorkouts().filter(Storage.countsAsTraining);
+
+    const card = document.getElementById('challenge-card');
+    if (card) {
+      const c = Goals.getMonthlyChallenge(counted, { mPerRev });
+      card.hidden = false;
+      document.getElementById('challenge-title').textContent = `Desafio de ${c.monthName}`;
+      document.getElementById('challenge-days').textContent =
+        c.daysLeft === 0 ? 'último dia' : `faltam ${c.daysLeft} dias`;
+      document.getElementById('challenge-km-text').textContent =
+        `${formatDecimal(c.km.value)} de ${c.km.target} km`;
+      document.getElementById('challenge-min-text').textContent =
+        `${Math.round(c.minutes.value)} de ${c.minutes.target} min`;
+      document.getElementById('challenge-km-fill').style.width = `${Math.round(c.km.pct * 100)}%`;
+      document.getElementById('challenge-min-fill').style.width = `${Math.round(c.minutes.pct * 100)}%`;
+
+      const { weeklyGoal } = Storage.getSettings();
+      const sessionsLeft = Math.max(1, Math.ceil((c.daysLeft / 7) * Math.max(1, weeklyGoal || 1)));
+      const kmLeft = Math.max(0, c.km.target - c.km.value);
+      const pace = c.km.pct >= 1
+        ? `Desafio cumprido. Meta extra: ${Math.ceil((c.km.value * 1.2) / 5) * 5} km.`
+        : c.km.onTrack ? 'Você está no ritmo para fechar o mês.'
+          : `Para fechar: cerca de ${formatDecimal(kmLeft / sessionsLeft)} km por treino até o fim do mês.`;
+      document.getElementById('challenge-note').textContent = `${pace} `
+        + (c.basedOnLastMonth ? 'Meta: o mês passado + 10%.' : 'Meta calculada pela sua meta semanal e seu treino típico.')
+        + ' Distância estimada pela cadência.';
+    }
+
+    const msCard = document.getElementById('milestones-card');
+    const msList = document.getElementById('milestones-list');
+    if (msCard && msList) {
+      const m = Goals.getMilestones(counted, mPerRev);
+      msCard.hidden = counted.length === 0;
+      const line = (label, t, fmt, unit) => {
+        const value = `${fmt(t.value)} ${unit}`;
+        const next = t.next ? `próxima: ${t.next} ${unit}` : 'todas alcançadas';
+        return `
+          <div class="goal-line">
+            <div class="goal-line-head"><span>${label}</span><span>${value} · ${next}</span></div>
+            <div class="bar"><div class="bar-fill" style="width:${Math.round(t.progress * 100)}%"></div></div>
+          </div>`;
+      };
+      msList.innerHTML = [
+        line('Treino mais longo', m.longestRide, (v) => Math.round(v), 'min'),
+        line('Maior distância num treino', m.longestDistance, (v) => formatDecimal(v), 'km'),
+        line('Distância acumulada', m.totalDistance, (v) => formatDecimal(v), 'km'),
+      ].join('');
+    }
   }
 
   /**
@@ -2158,78 +2334,69 @@ class SpinSyncApp {
       ? all.filter(w => `${w.planName || ''} ${w.note || ''}`.toLowerCase().includes(query))
       : all;
 
-    if (query && workouts.length === 0) {
-      list.innerHTML = `
-        <div class="history-empty">
-          <div class="history-empty-icon" aria-hidden="true">🔎</div>
-          <p>Nenhum treino encontrado para "${escapeHtml(query)}".</p>
-        </div>`;
-      return;
-    }
-
     if (workouts.length === 0) {
-      list.innerHTML = `
-        <div class="history-empty">
-          <div class="history-empty-icon">🚴</div>
-          <p>Nenhum treino registrado ainda.</p>
-          <p class="text-secondary" style="font-size:0.8rem;margin-top:4px;">Comece seu primeiro treino!</p>
-        </div>
-      `;
+      list.innerHTML = query
+        ? `<div class="empty-state"><p>Nenhum treino encontrado para "${escapeHtml(query)}".</p></div>`
+        : `<div class="empty-state"><p>Nenhum treino registrado ainda.</p>
+             <p class="fine-print">O primeiro aparece aqui assim que você finalizar.</p></div>`;
       return;
     }
 
-    list.innerHTML = workouts.map(w => {
-      const date = new Date(w.date);
-      const dateStr = date.toLocaleDateString('pt-BR', {
-        day: '2-digit', month: 'short'
-      });
-      const timeStr = date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    // Agrupado por mês, com o total de cada um: a lista vira diário, não só um log.
+    const mPerRev = Goals.metersPerRev();
+    const groups = new Map();
+    for (const w of workouts) {
+      const d = new Date(w.date);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      if (!groups.has(key)) groups.set(key, { date: d, items: [] });
+      groups.get(key).items.push(w);
+    }
 
+    const row = (w) => {
+      const d = new Date(w.date);
+      const when = `${d.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' })} · ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+      const dist = Goals.workoutDistance(w, mPerRev);
+      const meta = [
+        formatMinutes(w.durationSeconds),
+        dist.m > 0 ? `${formatDecimal(dist.m / 1000)} km${dist.estimated ? ' est.' : ''}` : null,
+        w.avgBPM ? `FC ${w.avgBPM}` : null,
+        w.rpe ? `RPE ${w.rpe}` : null,
+      ].filter(Boolean).join(' · ');
+      const tags = [
+        w.demo ? '<span class="tag tag-muted">demo</span>' : '',
+        !w.demo && !Storage.countsAsTraining(w) ? '<span class="tag tag-muted">curto</span>' : '',
+        w.note ? '<span class="tag tag-muted">nota</span>' : '',
+      ].join('');
       return `
-        <div class="history-item" data-workout-id="${escapeHtml(w.id)}">
-          <div class="history-icon" aria-hidden="true">🚴</div>
-          <div class="history-info">
-            <!-- The button is the row: its ::after overlay stretches over the whole card,
-                 so the click target stays the full row while staying valid HTML (a nested
-                 delete button cannot live inside another button). -->
-            <button type="button" class="history-open" data-workout-id="${escapeHtml(w.id)}">
-              <span class="history-date">${dateStr} · ${timeStr}${w.planName ? ` · ${escapeHtml(w.planName)}` : ''}${w.demo ? '<span class="history-demo-tag">demo</span>' : ''}</span>
-              <span class="history-meta">${w.durationFormatted} · FC média ${w.avgBPM || '--'} bpm${
-                w.rpe ? `<span class="history-rpe" style="background:${rpeColor(w.rpe)}33;color:${rpeColor(w.rpe)}">RPE ${w.rpe}</span>` : ''
-              }${w.note ? ' <span aria-label="Tem anotação" title="Tem anotação">📝</span>' : ''}</span>
-            </button>
+        <button type="button" class="history-item" data-workout-id="${escapeHtml(w.id)}">
+          <span class="history-top">
+            <span class="history-name">${escapeHtml(w.planName || 'Treino livre')}</span>
+            <span class="history-date">${escapeHtml(when)}</span>
+          </span>
+          <span class="history-meta">${escapeHtml(meta)}${tags}</span>
+        </button>`;
+    };
+
+    list.innerHTML = [...groups.values()].map(g => {
+      const counted = g.items.filter(Storage.countsAsTraining);
+      const km = counted.reduce((s, w) => s + Goals.workoutDistance(w, mPerRev).m, 0) / 1000;
+      const min = Math.round(counted.reduce((s, w) => s + (w.durationSeconds || 0), 0) / 60);
+      const month = g.date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      return `
+        <section class="history-group">
+          <div class="history-group-head">
+            <span>${escapeHtml(month.charAt(0).toUpperCase() + month.slice(1))}</span>
+            <span>${counted.length} treinos · ${min} min · ${formatDecimal(km)} km</span>
           </div>
-          <div class="history-cal">${w.calories} kcal</div>
-          <button class="history-delete" data-delete-id="${escapeHtml(w.id)}" aria-label="Excluir treino">✕</button>
-        </div>
-      `;
+          ${g.items.map(row).join('')}
+        </section>`;
     }).join('');
 
-    // Bind click events
-    list.querySelectorAll('.history-open').forEach(item => {
+    // Excluir fica no resumo do treino: na lista era um toque a um centímetro de abrir.
+    list.querySelectorAll('.history-item').forEach(item => {
       item.addEventListener('click', () => {
-        const id = item.dataset.workoutId;
-        const workout = Storage.getWorkoutById(id);
+        const workout = Storage.getWorkoutById(item.dataset.workoutId);
         if (workout) this.showSummaryView(workout, 'history');
-      });
-    });
-
-    list.querySelectorAll('.history-delete').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation(); // don't open the summary behind the button
-        const id = btn.dataset.deleteId;
-        const confirmed = await this.confirm({
-          title: 'Excluir treino?',
-          // A escada é derivada do histórico, então excluir pode fazer regredir — isso
-          // acontecia sem nenhum aviso.
-          text: 'Este treino será removido do histórico definitivamente.'
-            + ' Se ele contava para a escada de progressão, você pode regredir um degrau.',
-          confirmLabel: 'Excluir'
-        });
-        if (!confirmed) return;
-        Storage.deleteWorkout(id);
-        this.toast('Treino excluído.', 'warning');
-        this.renderHistory();
       });
     });
   }
@@ -2297,47 +2464,74 @@ class SpinSyncApp {
   // GUIDED TRAINING PLANS
   // ══════════════════════════════════════════
 
-  renderPlanCards() {
+  /**
+   * Biblioteca de treinos, por objetivo.
+   *
+   * Era um carrossel horizontal filtrado por nível, com um emoji grande por card: metade
+   * dos treinos ficava fora da tela e o filtro respondia "quão difícil", não "para quê".
+   * Agora é uma lista vertical por categoria, com nível e duração à direita.
+   */
+  renderPlanLibrary() {
     const container = document.getElementById('plans-scroll');
-    if (!container) return;
+    const tabsEl = document.getElementById('plan-filter-tabs');
+    if (!container || !tabsEl) return;
 
     const allPlans = Plans.getAllPlans();
+    const custom = Plans.getCustomPlans();
+    const categories = [...Plans.CATEGORIES, ...(custom.length ? [Plans.CUSTOM_CATEGORY] : [])];
+    if (!['all', ...categories.map(c => c.id)].includes(this.planFilter)) this.planFilter = 'all';
 
-    // Filter by selected level
-    const normalizeLevel = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace('+', '');
-    const plans = this.planFilter === 'all'
-      ? allPlans
-      : allPlans.filter(p => normalizeLevel(p.difficulty).startsWith(normalizeLevel(this.planFilter)));
+    tabsEl.innerHTML = [{ id: 'all', name: 'Todos' }, ...categories].map(c => `
+      <button type="button" class="tab${c.id === this.planFilter ? ' active' : ''}" role="tab"
+              aria-selected="${c.id === this.planFilter}" data-category="${c.id}">${escapeHtml(c.name)}</button>`).join('');
 
-    if (plans.length === 0) {
-      container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-tertiary);font-size:0.85rem;">Nenhum treino neste nível</div>`;
-      return;
+    const desc = document.getElementById('category-desc');
+    const current = categories.find(c => c.id === this.planFilter);
+    if (desc) {
+      desc.hidden = !current;
+      desc.textContent = current?.desc || '';
     }
 
-    container.innerHTML = plans.map(plan => {
-      const dur = Plans.getPlanDuration(plan);
-      const durStr = Plans.formatDuration(dur);
-      const badgeClass = normalizeLevel(plan.difficulty);
+    const recommendedId = this.todayRecommendation?.plan?.id;
+    const ladderCurrentId = Progression.getLadderState(Storage.getProfile()).current?.planId;
+    const rank = { 'Iniciante': 0, 'Iniciante+': 1, 'Intermediário': 2, 'Avançado': 3 };
+    const byLevel = (a, b) => (rank[a.difficulty] ?? 9) - (rank[b.difficulty] ?? 9)
+      || Plans.getPlanDuration(a) - Plans.getPlanDuration(b);
 
+    const row = (plan) => {
+      const tags = [
+        plan.id === recommendedId ? '<span class="tag tag-accent">hoje</span>' : '',
+        plan.id === ladderCurrentId && plan.id !== recommendedId ? '<span class="tag tag-muted">seu degrau</span>' : '',
+      ].join('');
       return `
-        <button type="button" class="plan-card" data-plan-id="${escapeHtml(plan.id)}">
-          <span class="plan-card-emoji" aria-hidden="true">${escapeHtml(plan.emoji)}</span>
-          <span class="plan-card-name">${escapeHtml(plan.name)}</span>
-          <span class="plan-card-meta">
-            <span>${durStr}</span>
-            <span aria-hidden="true">·</span>
-            <span>${plan.phases.length} fases</span>
+        <button type="button" class="plan-row" data-plan-id="${escapeHtml(plan.id)}">
+          <span class="plan-row-main">
+            <span class="plan-row-name">${escapeHtml(plan.name)}${tags}</span>
+            <span class="plan-row-desc">${escapeHtml(plan.description || '')}</span>
           </span>
-          <span class="plan-card-badge badge-${badgeClass}">${escapeHtml(plan.difficulty)}</span>
-        </button>
-      `;
-    }).join('');
+          <span class="plan-row-side">
+            <span class="plan-row-dur">${Plans.formatDuration(Plans.getPlanDuration(plan))}</span>
+            <span class="plan-row-level">${escapeHtml(plan.difficulty || '')}</span>
+          </span>
+        </button>`;
+    };
 
-    container.querySelectorAll('.plan-card').forEach(card => {
-      card.addEventListener('click', () => {
-        const id = card.dataset.planId;
-        const plan = allPlans.find(p => p.id === id);
-        this.openPlanDetail(plan);
+    if (this.planFilter === 'all') {
+      container.innerHTML = categories.map(c => {
+        const plans = allPlans.filter(p => Plans.getPlanCategory(p).id === c.id).sort(byLevel);
+        if (!plans.length) return '';
+        return `<div class="plan-group-head">${escapeHtml(c.name)}</div>${plans.map(row).join('')}`;
+      }).join('');
+    } else {
+      const plans = allPlans.filter(p => Plans.getPlanCategory(p).id === this.planFilter).sort(byLevel);
+      container.innerHTML = plans.length
+        ? plans.map(row).join('')
+        : '<div class="empty-state"><p>Nenhum treino nesta categoria.</p></div>';
+    }
+
+    container.querySelectorAll('.plan-row').forEach(el => {
+      el.addEventListener('click', () => {
+        this.openPlanDetail(allPlans.find(p => p.id === el.dataset.planId));
       });
     });
   }
@@ -2364,37 +2558,40 @@ class SpinSyncApp {
     this.selectedPlan = plan;
     const zoneCalc = this.zoneCalcForProfile();
 
-    document.getElementById('plan-emoji').textContent = plan.emoji;
+    document.getElementById('plan-category').textContent = Plans.getPlanCategory(plan).name;
     document.getElementById('plan-name').textContent = plan.name;
-    document.getElementById('plan-desc').textContent = plan.description;
+    document.getElementById('plan-desc').textContent = plan.description || '';
     document.getElementById('plan-duration').textContent = Plans.formatDuration(Plans.getPlanDuration(plan));
     document.getElementById('plan-phases-count').textContent = plan.phases.length;
-    document.getElementById('plan-difficulty').textContent = plan.difficulty;
+    document.getElementById('plan-difficulty').textContent = plan.difficulty || '--';
 
-    // Render phase timeline
-    const timeline = document.getElementById('plan-timeline');
-    timeline.innerHTML = plan.phases.map((phase, i) => {
+    // Versão com a duração ajustada ao histórico (personalization.scalePlan): diz o quanto
+    // mudou e deixa voltar à original com um toque.
+    const personal = document.getElementById('plan-personal');
+    if (personal) {
+      personal.hidden = !plan.personalized;
+      if (plan.personalized) {
+        document.getElementById('plan-personal-text').textContent =
+          `Ajustado para você: ${Plans.formatDuration(plan.personalized.toSec)} `
+          + `(original ${Plans.formatDuration(plan.personalized.fromSec)}).`;
+      }
+    }
+
+    document.getElementById('plan-timeline').innerHTML = plan.phases.map(phase => {
       const zone = Plans.getPhaseZone(phase);
       const bpm = Plans.resolvePhaseBPM(phase, zoneCalc);
       return `
-        <div class="phase-item">
-          <div class="phase-track">
-            <div class="phase-dot" style="border-color: ${zone.color}"></div>
-            <div class="phase-line"></div>
-          </div>
-          <div class="phase-content">
-            <div class="phase-header">
-              <span class="phase-name" style="color: ${zone.color}">${escapeHtml(phase.name)}</span>
-              <span class="phase-duration">${Plans.formatDuration(phase.duration)}</span>
+        <li class="phase-row" style="--zone-color:${zone.color}">
+          <span class="phase-mark" aria-hidden="true"></span>
+          <div class="phase-body">
+            <div class="phase-head">
+              <span class="phase-name">${escapeHtml(phase.name)}</span>
+              <span class="phase-dur">${Plans.formatDuration(phase.duration)}</span>
             </div>
-            <div class="phase-targets">
-              <span>❤️ ${bpm.min}-${bpm.max} bpm</span>
-              <span>🔄 ${phase.rpmMin}-${phase.rpmMax} rpm</span>
-            </div>
+            <div class="phase-targets">Z${phase.zone} · ${bpm.min}–${bpm.max} bpm · ${phase.rpmMin}–${phase.rpmMax} rpm</div>
             ${phase.tip ? `<div class="phase-tip">${escapeHtml(phase.tip)}</div>` : ''}
           </div>
-        </div>
-      `;
+        </li>`;
     }).join('');
 
     // Always allow starting — sensors are optional
@@ -2403,14 +2600,15 @@ class SpinSyncApp {
 
     this.renderPlanLadderStatus(plan, Storage.getProfile());
 
-    // Custom plans can be edited and deleted; the 12 pre-built ones cannot.
+    // Custom plans can be edited and deleted; the built-in ones cannot.
     const isCustom = Plans.isCustomPlan(plan.id);
     const delBtn = document.getElementById('btn-delete-plan');
-    if (delBtn) delBtn.style.display = isCustom ? '' : 'none';
+    if (delBtn) delBtn.hidden = !isCustom;
     const editBtn = document.getElementById('btn-edit-plan');
-    if (editBtn) editBtn.style.display = isCustom ? '' : 'none';
+    if (editBtn) editBtn.hidden = !isCustom;
 
     this.showView('plan-detail');
+    window.scrollTo(0, 0);
   }
 
   /** Marks where this plan sits on the ladder relative to where the rider is. */
@@ -2429,12 +2627,12 @@ class SpinSyncApp {
 
     const position = `Passo ${step.index + 1} de ${state.totalSteps}`;
     const labels = {
-      cleared: `✓ Concluído · ${position} · melhor nota ${step.bestScore}/100`,
+      cleared: `Concluído · ${position} · melhor nota ${step.bestScore}/100`,
       current: step.attempts === 0
-        ? `▶ Este treino começa aqui · ${position}`
-        : `▶ Você está aqui · ${position} · melhor nota ${step.bestScore}/100`,
-      locked: `🔒 ${position} · conclua os anteriores primeiro`,
-      skipped: `⤼ Pulado · ${position}`,
+        ? `Seu próximo degrau · ${position}`
+        : `Você está aqui · ${position} · melhor nota ${step.bestScore}/100`,
+      locked: `Bloqueado · ${position} · conclua os anteriores primeiro`,
+      skipped: `Pulado · ${position}`,
     };
 
     el.hidden = false;
@@ -2521,7 +2719,7 @@ class SpinSyncApp {
     this._phaseWarnFired = false;
     this._finalWarnFired = false;
 
-    this.recorder = new WorkoutRecorder(profile);
+    this.recorder = new WorkoutRecorder(profile, { metersPerRev: Goals.metersPerRev() });
     this.recorder.start();
     // Um treino novo não herda a pausa automática do anterior.
     this.autoPaused = false;
@@ -2534,11 +2732,14 @@ class SpinSyncApp {
 
     document.getElementById('guided-plan-name').textContent = this.guidedPlan.name;
     document.getElementById('guided-calories').textContent = '0';
+    document.getElementById('guided-distance').textContent = '0,0';
+    document.getElementById('guided-remaining').textContent =
+      formatClock(Plans.getPlanDuration(this.guidedPlan));
 
     const pauseBtn = document.getElementById('btn-guided-pause');
     if (pauseBtn) {
       pauseBtn.classList.remove('paused');
-      pauseBtn.innerHTML = '⏸ Pausar';
+      pauseBtn.textContent = 'Pausar';
     }
 
     this.startTicking(() => this.guidedTick(), this.guidedPlan?.name || 'Treino guiado');
@@ -2638,6 +2839,10 @@ class SpinSyncApp {
     const pct = Math.min(100, (total / planTotal) * 100);
     const fill = document.getElementById('guided-overall-fill');
     if (fill) fill.style.width = `${pct}%`;
+    // Só a barra fina não dizia quanto faltava — e é a primeira pergunta no meio do treino.
+    const remaining = document.getElementById('guided-remaining');
+    if (remaining) remaining.textContent = formatClock(Math.max(0, planTotal - total));
+    this.updateDistanceMetric('guided-distance');
 
     this.persistCounter++;
     if (this.persistCounter % 5 === 0) {
@@ -2656,7 +2861,7 @@ class SpinSyncApp {
 
     // Phase label & name
     document.getElementById('guided-phase-label').textContent =
-      `FASE ${this.guidedPhaseIndex + 1} DE ${plan.phases.length}`;
+      `Fase ${this.guidedPhaseIndex + 1} de ${plan.phases.length}`;
     const nameEl = document.getElementById('guided-phase-name');
     if (nameEl) {
       nameEl.textContent = phase.name;
@@ -2664,19 +2869,19 @@ class SpinSyncApp {
     }
 
     // BPM target range
-    document.getElementById('guided-bpm-range').textContent = `${bpm.min}-${bpm.max}`;
-    document.getElementById('guided-rpm-range').textContent = `${phase.rpmMin}-${phase.rpmMax}`;
+    document.getElementById('guided-bpm-range').textContent = `${bpm.min}–${bpm.max}`;
+    document.getElementById('guided-rpm-range').textContent = `${phase.rpmMin}–${phase.rpmMax}`;
 
     // Tip
     const tipCard = document.getElementById('guided-tip-card');
     const tipDot = document.getElementById('guided-tip-dot');
     const tipText = document.getElementById('guided-tip-text');
     if (tipCard && phase.tip) {
-      tipCard.style.display = 'flex';
+      tipCard.hidden = false;
       tipDot.style.backgroundColor = zone.color;
       tipText.textContent = phase.tip;
     } else if (tipCard) {
-      tipCard.style.display = 'none';
+      tipCard.hidden = true;
     }
 
     // Next phase preview
@@ -2684,13 +2889,13 @@ class SpinSyncApp {
     const nextPhase = plan.phases[this.guidedPhaseIndex + 1];
     if (nextCard && nextPhase) {
       const nextZone = Plans.getPhaseZone(nextPhase);
-      nextCard.style.display = 'flex';
+      nextCard.hidden = false;
       document.getElementById('guided-next-dot').style.backgroundColor = nextZone.color;
       document.getElementById('guided-next-name').textContent = nextPhase.name;
       document.getElementById('guided-next-meta').textContent =
-        `${Plans.formatDuration(nextPhase.duration)} · Z${nextPhase.zone} · ${nextPhase.rpmMin}-${nextPhase.rpmMax} rpm`;
+        `${Plans.formatDuration(nextPhase.duration)} · Z${nextPhase.zone} · ${nextPhase.rpmMin}–${nextPhase.rpmMax} rpm`;
     } else if (nextCard) {
-      nextCard.style.display = 'none';
+      nextCard.hidden = true;
     }
   }
 
@@ -2718,12 +2923,8 @@ class SpinSyncApp {
     if (bpmEl) bpmEl.textContent = dp.bpm || '--';
 
     // BPM circle color
-    const circle = document.getElementById('guided-bpm-circle');
-    if (circle) {
-      circle.style.background = `radial-gradient(circle, ${zone.color}20 0%, ${zone.color}08 70%)`;
-      circle.style.border = `2px solid ${zone.color}40`;
-      if (bpmEl) bpmEl.style.color = zone.color;
-    }
+    // No guiado a cor é a da zona PEDIDA: o número ao lado diz se você está nela.
+    document.getElementById('guided-bpm-circle')?.style.setProperty('--zone-color', zone.color);
 
     // BPM target badge
     const bpmStatus = Plans.evaluateTarget(dp.bpm, bpmTarget.min, bpmTarget.max);
@@ -2743,12 +2944,12 @@ class SpinSyncApp {
     if (!badge) return;
 
     const labels = {
-      'on_target': '✅ No alvo',
-      'close_below': '⬆️ Quase',
-      'close_above': '⬇️ Quase',
-      'below': '⬆️ Aumente',
-      'above': '⬇️ Reduza',
-      'no_data': '—'
+      'on_target': 'No alvo',
+      'close_below': 'Quase · suba',
+      'close_above': 'Quase · alivie',
+      'below': 'Suba',
+      'above': 'Alivie',
+      'no_data': 'sem dado'
     };
 
     badge.textContent = labels[status] || '—';
@@ -2785,6 +2986,10 @@ class SpinSyncApp {
         this.viewingSummary.planName = this.guidedPlan.name;
         // planId is what lets the progression engine grade this session later.
         this.viewingSummary.planId = this.guidedPlan.id;
+        this.viewingSummary.category = this.guidedPlan.category || null;
+        // Snapshot das fases de fato pedaladas: a versão ajustada à sua dose não existe no
+        // catálogo, e a avaliação (progression.evaluateSession) precisa julgar contra ela.
+        this.viewingSummary.planPhases = this.guidedPlan.phases.map(p => ({ ...p }));
       }
     }
 
@@ -2799,7 +3004,11 @@ class SpinSyncApp {
   // ══════════════════════════════════════════
 
   persistWorkoutState(type) {
-    if (!this.recorder) return;
+    // Treino já encerrado não é "em andamento". O gravador fica em memória depois do fim
+    // (o resumo ainda o usa), e o salvamento de segurança ao ir para segundo plano o
+    // regravava como ativo: no boot seguinte, o modal oferecia retomar um treino que tinha
+    // acabado — inclusive um que o usuário acabara de descartar.
+    if (!this.recorder || this.recorder.endTime) return;
 
     const state = {
       type, // 'free' or 'guided'
@@ -2810,6 +3019,8 @@ class SpinSyncApp {
 
     if (type === 'guided' && this.guidedPlan) {
       state.planId = this.guidedPlan.id;
+      state.planName = this.guidedPlan.name;
+      state.planPhases = this.guidedPlan.phases;
       state.guidedPhaseIndex = this.guidedPhaseIndex;
       state.guidedPhaseElapsed = this.guidedPhaseElapsed;
       state.guidedTotalElapsed = this.guidedTotalElapsed;
@@ -2850,7 +3061,7 @@ class SpinSyncApp {
 
     const calories = Math.round(saved.recorder.totalCalories || 0);
 
-    let typeLabel = 'Treino Livre';
+    let typeLabel = 'Treino livre';
     if (saved.type === 'guided' && saved.planId) {
       const plan = Plans.getAllPlans().find(p => p.id === saved.planId);
       typeLabel = plan ? plan.name : 'Treino Guiado';
@@ -2890,7 +3101,7 @@ class SpinSyncApp {
     const profile = saved.recorder.profile || Storage.getProfile();
     if (!profile) return;
 
-    this.recorder = new WorkoutRecorder(profile);
+    this.recorder = new WorkoutRecorder(profile, { metersPerRev: Goals.metersPerRev() });
     this.recorder.restoreState(saved.recorder);
     // Sem isto o auto-pause fica morto após uma recuperação: checkAutoPause sai cedo
     // enquanto lastPedalAt for 0, e ele só voltaria no primeiro evento de cadência.
@@ -2912,7 +3123,7 @@ class SpinSyncApp {
     const pauseBtn = document.getElementById('btn-pause');
     if (pauseBtn) {
       pauseBtn.classList.add('paused');
-      pauseBtn.innerHTML = '▶ Retomar';
+      pauseBtn.textContent = 'Retomar';
     }
 
     // Show workout view
@@ -2941,8 +3152,11 @@ class SpinSyncApp {
     const profile = saved.recorder.profile || Storage.getProfile();
     if (!profile) return;
 
-    // Find the plan
-    const plan = Plans.getAllPlans().find(p => p.id === saved.planId);
+    // Find the plan — com as fases e o nome que estavam rodando, se foram ajustados.
+    const base = Plans.getAllPlans().find(p => p.id === saved.planId);
+    const plan = base && Array.isArray(saved.planPhases) && saved.planPhases.length
+      ? { ...base, name: saved.planName || base.name, phases: saved.planPhases }
+      : base;
     if (!plan) {
       // Plan not found, fall back to free workout resume
       this.resumeWorkout(saved);
@@ -2954,7 +3168,7 @@ class SpinSyncApp {
     this._phaseWarnFired = false;
     this._finalWarnFired = false;
 
-    this.recorder = new WorkoutRecorder(profile);
+    this.recorder = new WorkoutRecorder(profile, { metersPerRev: Goals.metersPerRev() });
     this.recorder.restoreState(saved.recorder);
 
     // Índice derivado do relógio, não lido do estado salvo: um scratch state gravado pela
@@ -2983,7 +3197,7 @@ class SpinSyncApp {
     const pauseBtn = document.getElementById('btn-guided-pause');
     if (pauseBtn) {
       pauseBtn.classList.add('paused');
-      pauseBtn.innerHTML = '▶ Retomar';
+      pauseBtn.textContent = 'Retomar';
     }
 
     // Update timers
@@ -3020,7 +3234,12 @@ class SpinSyncApp {
     this.editingPlanId = plan?.id || null;
 
     document.getElementById('creator-name').value = plan?.name || '';
-    document.getElementById('creator-emoji').value = plan?.emoji || '🔥';
+    const categorySelect = document.getElementById('creator-category');
+    if (categorySelect) {
+      categorySelect.innerHTML = Plans.CATEGORIES
+        .map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+      categorySelect.value = plan?.category || 'folego';
+    }
     document.getElementById('creator-desc').value = plan?.description || '';
     document.getElementById('creator-difficulty').value = plan?.difficulty || 'Iniciante';
 
@@ -3178,7 +3397,7 @@ class SpinSyncApp {
       // Preserva o id ao editar, senão salvar viraria sempre uma cópia nova.
       id: this.editingPlanId || 'custom_' + Date.now(),
       name,
-      emoji: document.getElementById('creator-emoji').value || '🔥',
+      category: document.getElementById('creator-category')?.value || 'folego',
       description: document.getElementById('creator-desc').value || '',
       difficulty: document.getElementById('creator-difficulty').value,
       focus: 'Personalizado',
@@ -3204,6 +3423,36 @@ function rpeColor(rpe) {
 }
 
 /** Plan and phase names are user input rendered through innerHTML. */
+/** Número com vírgula decimal, como se lê no Brasil. */
+function formatDecimal(value, digits = 1) {
+  return (Number(value) || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  });
+}
+
+/** mm:ss, ou h:mm:ss acima de uma hora. */
+function formatClock(totalSeconds) {
+  const t = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+/** "18 min" ou "1 h 05 min". */
+function formatMinutes(seconds) {
+  const total = Math.round((seconds || 0) / 60);
+  if (total < 60) return `${total} min`;
+  return `${Math.floor(total / 60)} h ${String(total % 60).padStart(2, '0')} min`;
+}
+
+/** Cores do gráfico ao vivo: FC em vermelho (a convenção), cadência neutra. */
+const CHART_HR = '#EF5350';
+const CHART_RPM = '#8A9099';
+/** Barras do Progresso: o volume (a métrica principal) no destaque, o resto neutro. */
+const CHART_ACCENT = '#D4F54C';
+const CHART_MUTED = '#5C636C';
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -3226,7 +3475,6 @@ function showBootError(error) {
   const screen = document.createElement('div');
   screen.className = 'boot-error';
   screen.innerHTML = `
-    <div style="font-size:2.5rem">🚴</div>
     <h2>Não foi possível abrir o SpinSync</h2>
     <p>Os dados salvos parecem estar corrompidos.</p>
   `;

@@ -32,6 +32,8 @@ const PRECACHE_URLS = [
   './js/auto-backup.js',
   './js/workout-service.js',
   './js/physiology.js',
+  './js/personalization.js',
+  './js/goals.js',
   './js/vendor/chart.umd.js',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',

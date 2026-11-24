@@ -85,16 +85,24 @@ export function evaluateSession(summary, profile) {
   const plan = Plans.getAllPlans().find(p => p.id === summary.planId);
   if (!plan || !Array.isArray(plan.phases) || plan.phases.length === 0) return null;
 
+  // As fases que foram de fato pedaladas. Treinos de catálogo saem com a duração ajustada
+  // ao histórico de cada um (personalization.js), e julgar a versão de 20 min contra o
+  // plano-base de 30 daria 66% de conclusão a quem fez tudo. Treinos gravados antes disto
+  // não têm o snapshot e caem no plano atual, que para eles é o mesmo.
+  const phases = Array.isArray(summary.planPhases) && summary.planPhases.length
+    ? summary.planPhases
+    : plan.phases;
+
   // Built from the ride's own snapshot, so re-judging an old session after a profile
   // edit gives the same verdict it did on the day.
   const zoneCalc = zoneCalcFromSummary(summary, profile);
-  const planDuration = Plans.getPlanDuration(plan);
+  const planDuration = phases.reduce((sum, p) => sum + p.duration, 0);
 
   // Phase boundaries in seconds of elapsed workout time. Paused time is excluded from
   // both the recorder's clock and the guided phase clock, so the two stay aligned.
   const bounds = [];
   let acc = 0;
-  for (const phase of plan.phases) {
+  for (const phase of phases) {
     bounds.push({ phase, start: acc, end: acc + phase.duration });
     acc += phase.duration;
   }
@@ -226,7 +234,7 @@ export function judgeCustom(evaluation) {
     return {
       action: 'repeat',
       title: 'Treino não concluído',
-      message: `Você fez ${Math.round(evaluation.completion * 100)}% do que planejou.`,
+      message: `Você fez ${Math.round(evaluation.completion * 100)}% do treino.`,
       reasons,
       nextPlanId: null,
     };
@@ -236,7 +244,7 @@ export function judgeCustom(evaluation) {
     return {
       action: 'advance',
       title: 'Execução muito boa',
-      message: 'Você segurou o que este treino pediu com folga. Se ficou fácil, vale endurecer as fases.',
+      message: 'Você segurou o que este treino pediu com folga. A próxima sugestão já vem um pouco mais longa.',
       reasons,
       nextPlanId: null,
     };
@@ -255,7 +263,7 @@ export function judgeCustom(evaluation) {
   return {
     action: 'repeat',
     title: 'Longe do que o treino pedia',
-    message: 'Boa parte do tempo ficou fora das zonas e cadências que você mesmo definiu — talvez o plano esteja duro demais para agora.',
+    message: 'Boa parte do tempo ficou fora das zonas e cadências do treino — talvez ele esteja duro demais para agora.',
     reasons,
     nextPlanId: null,
   };
